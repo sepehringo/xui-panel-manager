@@ -190,6 +190,15 @@ ok() { color "32" "[✓] $*"; }
 warn() { color "33" "[⚠] $*"; }
 err() { color "31" "[✗] $*"; }
 
+# Header display
+header() {
+  clear
+  echo "================================================"
+  color "36" "   XUI Panel Manager - Installation"
+  echo "================================================"
+  echo ""
+}
+
 # Translation function
 t() {
   local key="$1"
