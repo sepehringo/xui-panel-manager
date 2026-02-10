@@ -819,6 +819,24 @@ EOF
 write_systemd_units() {
   local interval_sec="$1"
   
+  # Web service
+  cat >"$WEB_SERVICE_FILE" <<EOF
+[Unit]
+Description=XUI Panel Manager Web Interface
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$APP_DIR
+ExecStart=/usr/bin/python3 $APP_DIR/web_app.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
   # Sync service
   cat >"$SYNC_SERVICE_FILE" <<EOF
 [Unit]
@@ -861,13 +879,88 @@ disable_timer() {
   ok "$(t timer_disabled)"
 }
 
-# ... (continuing in next part due to length)
-PYSCRIPT
+# ==========================================
+# Main Installation Function
+# ==========================================
 
-  chmod +x "$SYNC_SCRIPT"
+main_install() {
+  header
+  select_language
+  
+  info "$(t starting_install)"
+  
+  # Install dependencies
+  install_deps
+  
+  # Detect local X-UI
+  detect_local_db
+  detect_local_service
+  
+  # Create directory structure
+  mkdir -p "$APP_DIR" "$ETC_DIR" "$VAR_DIR" "$BACKUP_DIR"
+  
+  # Generate SSH key
+  ensure_ssh_key
+  
+  # Ask for sync interval
+  echo ""
+  info "$(t sync_interval_prompt)"
+  read -p "$(t sync_interval_input) [60]: " SYNC_INTERVAL
+  SYNC_INTERVAL=${SYNC_INTERVAL:-60}
+  
+  # Initialize config files
+  init_config_files "$SYNC_INTERVAL"
+  
+  # Write sync script
+  write_sync_script
+  
+  # Copy web app
+  if [[ -f "web_app.py" ]]; then
+    cp web_app.py "$APP_DIR/"
+    cp -r templates "$APP_DIR/" 2>/dev/null || true
+  fi
+  
+  # Create systemd units
+  local interval_sec=$((SYNC_INTERVAL * 60))
+  write_systemd_units "$interval_sec"
+  
+  # Enable timer
+  enable_timer
+  
+  # Create symlink
+  ln -sf "$APP_DIR/web_app.py" /usr/local/bin/xui-panel-manager 2>/dev/null || true
+  
+  echo ""
+  success "$(t install_complete)"
+  echo ""
+  info "$(t next_steps)"
+  echo ""
+  echo "  1. $(t step_copy_key)"
+  echo "     cat $SSH_KEY.pub"
+  echo ""
+  echo "  2. $(t step_add_servers)"
+  echo "     # Edit: $SERVERS_FILE"
+  echo ""
+  echo "  3. $(t step_start_web)"
+  echo "     systemctl start xui-panel-manager-web"
+  echo "     # Web panel: http://YOUR_IP:8080"
+  echo "     # Default login: admin / admin123"
+  echo ""
+  echo "  4. $(t step_test_sync)"
+  echo "     python3 $SYNC_SCRIPT"
+  echo ""
 }
 
-# Continuing the installer script...
-# I'll create the web panel in the next file
+# ==========================================
+# Main Execution
+# ==========================================
 
-echo "Part 1 of installer created. Creating web panel next..."
+if [[ "$EUID" -ne 0 ]]; then
+  echo "Error: This script must be run as root (sudo)"
+  exit 1
+fi
+
+# Run installation
+main_install
+
+exit 0
