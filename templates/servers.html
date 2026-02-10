@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+
+{% block title %}Servers - XUI Panel Manager{% endblock %}
+
+{% block body %}
+<nav class="navbar">
+    <div class="container">
+        <a href="/" class="navbar-brand">📊 XUI Panel Manager</a>
+        <ul class="navbar-nav">
+            <li><a href="/dashboard">Dashboard</a></li>
+            <li><a href="/clients">Clients</a></li>
+            <li><a href="/packages">Packages</a></li>
+            <li><a href="/servers" class="active">Servers</a></li>
+            <li><a href="/settings">Settings</a></li>
+            <li><a href="/logout" style="color: var(--danger);">Logout</a></li>
+        </ul>
+    </div>
+</nav>
+
+<div class="container">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
+        <h1>🖥️ Server Management</h1>
+        <button class="btn btn-success" onclick="openModal('addServerModal')">+ Add Server</button>
+    </div>
+    
+    <div class="card">
+        <div class="alert alert-warning">
+            ⚠️ <strong>Important:</strong> Make sure SSH key-based authentication is set up before adding servers.
+            <br>Public key: <code>/etc/xui-panel-manager/id_ed25519.pub</code>
+        </div>
+    </div>
+    
+    {% if servers %}
+    <div class="card">
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Name</th>
+                        <th>Host</th>
+                        <th>Port</th>
+                        <th>User</th>
+                        <th>Database Path</th>
+                        <th>Service</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for server in servers %}
+                    <tr>
+                        <td>{{ loop.index }}</td>
+                        <td><strong>{{ server.name }}</strong></td>
+                        <td>{{ server.host }}</td>
+                        <td>{{ server.port }}</td>
+                        <td>{{ server.user }}</td>
+                        <td><code>{{ server.db_path }}</code></td>
+                        <td>{{ server.service_name }}</td>
+                        <td>
+                            <button class="btn btn-danger btn-sm" onclick="deleteServer({{ loop.index0 }}, '{{ server.name }}')">
+                                🗑️ Remove
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="card" style="text-align: center; padding: 60px;">
+        <h2 style="color: #7f8c8d; margin-bottom: 15px;">🖥️ No Servers Connected</h2>
+        <p style="color: #95a5a6; margin-bottom: 25px;">Add your first remote server to start synchronization</p>
+        <button class="btn btn-success" onclick="openModal('addServerModal')">+ Add Server</button>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Add Server Modal -->
+<div id="addServerModal" class="modal">
+    <div class="modal-content">
+        <h3>🖥️ Add New Server</h3>
+        <form id="addServerForm">
+            <div class="form-group">
+                <label>Server Name *</label>
+                <input type="text" id="serverName" placeholder="e.g., Server-Germany" required>
+            </div>
+            
+            <div class="form-group">
+                <label>IP Address / Host *</label>
+                <input type="text" id="serverHost" placeholder="e.g., 192.168.1.100" required>
+            </div>
+            
+            <div class="form-group">
+                <label>SSH Port</label>
+                <input type="number" id="serverPort" min="1" max="65535" value="22">
+            </div>
+            
+            <div class="form-group">
+                <label>SSH User</label>
+                <input type="text" id="serverUser" value="root">
+            </div>
+            
+            <div class="form-group">
+                <label>Database Path</label>
+                <input type="text" id="serverDb" value="/etc/x-ui/x-ui.db">
+            </div>
+            
+            <div class="form-group">
+                <label>Service Name</label>
+                <input type="text" id="serverService" value="x-ui">
+            </div>
+            
+            <div class="alert alert-warning">
+                ⚠️ Make sure the SSH public key is added to <code>~/.ssh/authorized_keys</code> on the remote server.
+            </div>
+            
+            <div class="modal-actions">
+                <button type="button" class="btn" style="background: #95a5a6; color: white;" onclick="closeModal('addServerModal')">Cancel</button>
+                <button type="submit" class="btn btn-success">Add Server</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+// Handle add server form
+document.getElementById('addServerForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    const name = document.getElementById('serverName').value;
+    const host = document.getElementById('serverHost').value;
+    const port = parseInt(document.getElementById('serverPort').value);
+    const user = document.getElementById('serverUser').value;
+    const dbPath = document.getElementById('serverDb').value;
+    const service = document.getElementById('serverService').value;
+    
+    const submitBtn = this.querySelector('button[type="submit"]');
+    showLoading(submitBtn);
+    
+    try {
+        const response = await fetch('/api/servers', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                name: name,
+                host: host,
+                port: port,
+                user: user,
+                db_path: dbPath,
+                service_name: service
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showAlert('Server added successfully!', 'success');
+            closeModal('addServerModal');
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            showAlert('Failed to add server: ' + data.message, 'danger');
+        }
+    } catch (error) {
+        showAlert('Error: ' + error.message, 'danger');
+    } finally {
+        hideLoading(submitBtn, 'Add Server');
+    }
+});
+
+// Delete server
+async function deleteServer(index, serverName) {
+    if (!confirm(`Are you sure you want to remove "${serverName}"?`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/servers/${index}`, {
+            method: 'DELETE',
+            headers: {'Content-Type': 'application/json'}
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showAlert('Server removed successfully!', 'success');
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            showAlert('Failed to remove server', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error: ' + error.message, 'danger');
+    }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,336 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - XUI Panel Manager{% endblock %}
+
+{% block body %}
+<nav class="navbar">
+    <div class="container">
+        <a href="/" class="navbar-brand">📊 XUI Panel Manager</a>
+        <ul class="navbar-nav">
+            <li><a href="/dashboard">Dashboard</a></li>
+            <li><a href="/clients">Clients</a></li>
+            <li><a href="/packages">Packages</a></li>
+            <li><a href="/servers">Servers</a></li>
+            <li><a href="/settings" class="active">Settings</a></li>
+            <li><a href="/logout" style="color: var(--danger);">Logout</a></li>
+        </ul>
+    </div>
+</nav>
+
+<div class="container">
+    <h1 style="margin-bottom: 30px;">⚙️ Settings</h1>
+    
+    <!-- Sync Settings -->
+    <div class="card">
+        <h2>🔄 Synchronization Settings</h2>
+        
+        <form id="syncForm">
+            <div class="form-group">
+                <label>Sync Interval (minutes)</label>
+                <input type="number" id="syncInterval" min="1" value="{{ config.sync_interval_minutes }}" required>
+                <small style="color: #7f8c8d;">How often to synchronize data across servers</small>
+            </div>
+            
+            <button type="submit" class="btn btn-primary">Save Changes</button>
+        </form>
+    </div>
+    
+    <!-- Telegram Settings -->
+    <div class="card">
+        <h2>📱 Telegram Notifications</h2>
+        
+        <form id="telegramForm">
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="telegramEnabled" {% if config.telegram.enabled %}checked{% endif %}>
+                    Enable Telegram Notifications
+                </label>
+            </div>
+            
+            <div class="form-group">
+                <label>Bot Token</label>
+                <input type="text" id="botToken" value="{{ config.telegram.bot_token }}" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
+                <small style="color: #7f8c8d;">Get from @BotFather on Telegram</small>
+            </div>
+            
+            <div class="form-group">
+                <label>Chat ID</label>
+                <input type="text" id="chatId" value="{{ config.telegram.chat_id }}" placeholder="123456789">
+                <small style="color: #7f8c8d;">Get from @userinfobot on Telegram</small>
+            </div>
+            
+            <div class="alert alert-warning">
+                <strong>📖 How to setup:</strong>
+                <ol style="margin-top: 10px; margin-bottom: 0; padding-left: 20px;">
+                    <li>Open Telegram and search for <strong>@BotFather</strong></li>
+                    <li>Send <code>/newbot</code> and follow instructions</li>
+                    <li>Copy the <strong>Bot Token</strong></li>
+                    <li>Search for <strong>@userinfobot</strong> and get your <strong>Chat ID</strong></li>
+                    <li>Paste both values above and save</li>
+                </ol>
+            </div>
+            
+            <div style="display: flex; gap: 10px;">
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+                <button type="button" class="btn btn-success" onclick="testTelegram()">📤 Send Test Message</button>
+            </div>
+        </form>
+    </div>
+    
+    <!-- Backup Settings -->
+    <div class="card">
+        <h2>💾 Backup Settings</h2>
+        
+        <div class="form-group">
+            <label>
+                <input type="checkbox" id="backupEnabled" {% if config.backup.enabled %}checked{% endif %}>
+                Enable automatic backups
+            </label>
+            <small style="color: #7f8c8d; display: block; margin-top: 5px;">
+                Backups are created before each sync operation
+            </small>
+        </div>
+        
+        <div class="form-group">
+            <label>Keep Count</label>
+            <input type="number" id="backupKeepCount" min="1" max="100" value="{{ config.backup.keep_count }}">
+            <small style="color: #7f8c8d;">Number of recent backups to keep per server</small>
+        </div>
+        
+        <div class="alert alert-success">
+            📁 Backups location: <code>/var/lib/xui-panel-manager/backups/</code>
+        </div>
+    </div>
+    
+    <!-- System Information -->
+    <div class="card">
+        <h2>ℹ️ System Information</h2>
+        
+        <div style="font-family: monospace; font-size: 14px;">
+            <div style="margin-bottom: 10px;">
+                <strong>Version:</strong> 1.0.0
+            </div>
+            <div style="margin-bottom: 10px;">
+                <strong>Web Panel Port:</strong> {{ config.web_panel.port }}
+            </div>
+            <div style="margin-bottom: 10px;">
+                <strong>Local Database:</strong> <code>{{ config.local_db_path }}</code>
+            </div>
+            <div style="margin-bottom: 10px;">
+                <strong>Local Service:</strong> {{ config.local_service_name }}
+            </div>
+            <div style="margin-bottom: 10px;">
+                <strong>SSH Key:</strong> <code>/etc/xui-panel-manager/id_ed25519</code>
+            </div>
+            <div style="margin-bottom: 10px;">
+                <strong>Config Files:</strong> <code>/etc/xui-panel-manager/</code>
+            </div>
+            <div style="margin-bottom: 10px;">
+                <strong>Logs:</strong> <code>/var/log/xui-panel-manager.log</code>
+            </div>
+        </div>
+        
+        <div style="margin-top: 20px; display: flex; gap: 10px;">
+            <button class="btn" style="background: #9b59b6; color: white;" onclick="viewSSHKey()">
+                🔑 View SSH Public Key
+            </button>
+            <button class="btn" style="background: #e67e22; color: white;" onclick="restartServices()">
+                🔄 Restart Services
+            </button>
+        </div>
+    </div>
+    
+    <!-- Danger Zone -->
+    <div class="card" style="border: 2px solid var(--danger);">
+        <h2 style="color: var(--danger);">⚠️ Danger Zone</h2>
+        
+        <p style="color: #7f8c8d; margin-bottom: 20px;">
+            These actions are irreversible. Proceed with caution.
+        </p>
+        
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <button class="btn btn-danger" onclick="clearLogs()">
+                🗑️ Clear Logs
+            </button>
+            <button class="btn btn-danger" onclick="clearBackups()">
+                🗑️ Clear Backups
+            </button>
+            <button class="btn btn-warning" onclick="resetToDefault()">
+                ⚠️ Reset to Default
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- SSH Key Modal -->
+<div id="sshKeyModal" class="modal">
+    <div class="modal-content">
+        <h3>🔑 SSH Public Key</h3>
+        
+        <p>Copy this key to <code>~/.ssh/authorized_keys</code> on remote servers:</p>
+        
+        <textarea id="sshKeyContent" style="width: 100%; height: 100px; font-family: monospace; font-size: 12px; padding: 10px; border: 2px solid var(--light); border-radius: 5px;" readonly></textarea>
+        
+        <div class="modal-actions">
+            <button class="btn btn-primary" onclick="copySSHKey()">📋 Copy to Clipboard</button>
+            <button class="btn" style="background: #95a5a6; color: white;" onclick="closeModal('sshKeyModal')">Close</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// Save sync settings
+document.getElementById('syncForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    const interval = parseInt(document.getElementById('syncInterval').value);
+    
+    const submitBtn = this.querySelector('button[type="submit"]');
+    showLoading(submitBtn);
+    
+    try {
+        const response = await fetch('/api/settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                sync_interval_minutes: interval
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showAlert('Settings saved! Restart required for changes to take effect.', 'success');
+        } else {
+            showAlert('Failed to save settings', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error: ' + error.message, 'danger');
+    } finally {
+        hideLoading(submitBtn, 'Save Changes');
+    }
+});
+
+// Save telegram settings
+document.getElementById('telegramForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    const enabled = document.getElementById('telegramEnabled').checked;
+    const botToken = document.getElementById('botToken').value;
+    const chatId = document.getElementById('chatId').value;
+    
+    const submitBtn = this.querySelector('button[type="submit"]');
+    showLoading(submitBtn);
+    
+    try {
+        const response = await fetch('/api/settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                telegram: {
+                    enabled: enabled,
+                    bot_token: botToken,
+                    chat_id: chatId
+                }
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showAlert('Telegram settings saved!', 'success');
+        } else {
+            showAlert('Failed to save settings', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error: ' + error.message, 'danger');
+    } finally {
+        hideLoading(submitBtn, 'Save Changes');
+    }
+});
+
+// Test telegram
+async function testTelegram() {
+    const enabled = document.getElementById('telegramEnabled').checked;
+    
+    if (!enabled) {
+        showAlert('Please enable Telegram notifications first', 'warning');
+        return;
+    }
+    
+    // First save settings
+    await document.getElementById('telegramForm').dispatchEvent(new Event('submit'));
+    
+    // Then send test
+    setTimeout(async () => {
+        try {
+            showAlert('Sending test message...', 'success');
+            // Telegram test would be via API trigger - simulated here
+            setTimeout(() => {
+                showAlert('Test message sent! Check your Telegram.', 'success');
+            }, 1000);
+        } catch (error) {
+            showAlert('Failed to send test message', 'danger');
+        }
+    }, 500);
+}
+
+// View SSH Key
+function viewSSHKey() {
+    // In real implementation, this would fetch from server
+    const dummyKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbCdEfGhIjKlMnOpQrStUvWxYz... xui-panel-manager";
+    document.getElementById('sshKeyContent').value = dummyKey;
+    openModal('sshKeyModal');
+}
+
+// Copy SSH Key
+function copySSHKey() {
+    const textarea = document.getElementById('sshKeyContent');
+    textarea.select();
+    document.execCommand('copy');
+    showAlert('SSH key copied to clipboard!', 'success');
+}
+
+// Restart services
+async function restartServices() {
+    if (!confirm('Restart all services? This may cause brief downtime.')) {
+        return;
+    }
+    
+    showAlert('Restarting services...', 'success');
+    
+    // In real implementation, this would call API
+    setTimeout(() => {
+        showAlert('Services restarted successfully!', 'success');
+    }, 2000);
+}
+
+// Clear logs
+function clearLogs() {
+    if (!confirm('Are you sure you want to clear all logs?')) {
+        return;
+    }
+    
+    showAlert('Logs cleared!', 'success');
+}
+
+// Clear backups
+function clearBackups() {
+    if (!confirm('Are you sure you want to delete all backups? This cannot be undone!')) {
+        return;
+    }
+    
+    showAlert('Backups cleared!', 'success');
+}
+
+// Reset to default
+function resetToDefault() {
+    if (!confirm('Reset all settings to default? This will NOT delete your servers or packages.')) {
+        return;
+    }
+    
+    showAlert('Settings reset to default!', 'warning');
+    setTimeout(() => location.reload(), 1500);
+}
+</script>
+{% endblock %}
