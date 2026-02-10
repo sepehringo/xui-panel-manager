@@ -126,7 +126,7 @@ When suggesting enhancements, include:
 
 ```bash
 # Fork on GitHub first, then:
-git clone https://github.com/YOUR_USERNAME/xui-panel-manager.git
+git clone https://github.com/sepehringo/xui-panel-manager.git
 cd xui-panel-manager
 
 # Add upstream remote
@@ -640,8 +640,8 @@ pip install -r requirements.txt
 If you have questions not covered here:
 
 1. Check [documentation](docs/)
-2. Search [existing issues](https://github.com/YOUR_USERNAME/xui-panel-manager/issues)
-3. Ask in [Discussions](https://github.com/YOUR_USERNAME/xui-panel-manager/discussions)
+2. Search [existing issues](https://github.com/sepehringo/xui-panel-manager/issues)
+3. Ask in [Discussions](https://github.com/sepehringo/xui-panel-manager/discussions)
 4. Email maintainers (if really stuck)
 
 ---

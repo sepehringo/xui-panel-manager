@@ -193,4 +193,4 @@ xui-panel-manager/
 
 ---
 
-**For detailed release notes, visit: https://github.com/YOUR_USERNAME/xui-panel-manager/releases**
+**For detailed release notes, visit: https://github.com/sepehringo/xui-panel-manager/releases**

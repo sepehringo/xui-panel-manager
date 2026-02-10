@@ -6,7 +6,7 @@
 
 ```bash
 # دانلود و اجرا
-wget https://your-repo/xui-panel-manager-installer.sh
+wget https://sepehringo/xui-panel-manager-installer.sh
 chmod +x xui-panel-manager-installer.sh
 sudo ./xui-panel-manager-installer.sh
 ```
@@ -280,7 +280,7 @@ curl -X POST "https://api.telegram.org/bot<TOKEN>/sendMessage" \
 
 ```bash
 # دانلود نسخه جدید
-wget https://your-repo/xui-panel-manager-installer.sh
+wget https://sepehringo/xui-panel-manager-installer.sh
 
 # اجرا (تنظیمات حفظ می‌شود)
 chmod +x xui-panel-manager-installer.sh

@@ -105,7 +105,7 @@ sudo systemctl enable fail2ban
 ssh root@YOUR_SERVER_IP
 
 # دانلود و اجرا
-wget https://raw.githubusercontent.com/YOUR_USERNAME/xui-panel-manager/main/xui-panel-manager-installer.sh
+wget https://raw.githubusercontent.com/sepehringo/xui-panel-manager/main/xui-panel-manager-installer.sh
 chmod +x xui-panel-manager-installer.sh
 sudo ./xui-panel-manager-installer.sh
 
@@ -120,7 +120,7 @@ sudo ./xui-panel-manager-installer.sh
 sudo apt-get install -y git
 
 # کلون repository
-git clone https://github.com/YOUR_USERNAME/xui-panel-manager.git
+git clone https://github.com/sepehringo/xui-panel-manager.git
 cd xui-panel-manager
 
 # اجرای نصب
@@ -432,7 +432,7 @@ sudo /usr/local/bin/xui-backup.sh
 
 # دانلود نسخه جدید
 cd /tmp
-wget https://github.com/YOUR_USERNAME/xui-panel-manager/archive/refs/tags/v1.1.0.tar.gz
+wget https://github.com/sepehringo/xui-panel-manager/archive/refs/tags/v1.1.0.tar.gz
 tar -xzf v1.1.0.tar.gz
 
 # توقف سرویس‌ها

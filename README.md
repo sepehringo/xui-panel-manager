@@ -76,14 +76,14 @@ XUI Panel Manager is a comprehensive solution for managing multiple X-UI/3X-UI p
 ### One-Line Installation
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/YOUR_USERNAME/xui-panel-manager/main/xui-panel-manager-installer.sh | sudo bash
+wget -qO- https://raw.githubusercontent.com/sepehringo/xui-panel-manager/main/xui-panel-manager-installer.sh | sudo bash
 ```
 
 ### Manual Installation
 
 ```bash
 # Download
-git clone https://github.com/YOUR_USERNAME/xui-panel-manager.git
+git clone https://github.com/sepehringo/xui-panel-manager.git
 cd xui-panel-manager
 
 # Run installer
@@ -506,7 +506,7 @@ Contributions are welcome! Please:
 
 ```bash
 # Clone repo
-git clone https://github.com/YOUR_USERNAME/xui-panel-manager.git
+git clone https://github.com/sepehringo/xui-panel-manager.git
 cd xui-panel-manager
 
 # Install dependencies
@@ -550,8 +550,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support
 
 - **Documentation**: [docs/](docs/)
-- **Issues**: [GitHub Issues](https://github.com/YOUR_USERNAME/xui-panel-manager/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/YOUR_USERNAME/xui-panel-manager/discussions)
+- **Issues**: [GitHub Issues](https://github.com/sepehringo/xui-panel-manager/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/sepehringo/xui-panel-manager/discussions)
 - **Telegram**: [@YOUR_TELEGRAM_CHANNEL]
 
 ---
@@ -584,6 +584,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 Made with ❤️ for the X-UI community
 
-[Report Bug](https://github.com/YOUR_USERNAME/xui-panel-manager/issues) • [Request Feature](https://github.com/YOUR_USERNAME/xui-panel-manager/issues) • [Documentation](docs/)
+[Report Bug](https://github.com/sepehringo/xui-panel-manager/issues) • [Request Feature](https://github.com/sepehringo/xui-panel-manager/issues) • [Documentation](docs/)
 
 </div>

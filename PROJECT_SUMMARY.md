@@ -101,7 +101,7 @@
 
 ```bash
 # اگر از GitHub استفاده می‌کنید:
-wget https://raw.githubusercontent.com/YOUR_USERNAME/REPO/main/xui-panel-manager-installer.sh
+wget https://raw.githubusercontent.com/sepehringo/REPO/main/xui-panel-manager-installer.sh
 chmod +x xui-panel-manager-installer.sh
 sudo ./xui-panel-manager-installer.sh
 

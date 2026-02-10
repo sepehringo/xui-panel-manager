@@ -27,7 +27,7 @@
 # نام: xui-panel-manager
 
 # 2. کلون در کامپیوتر محلی
-git clone https://github.com/YOUR_USERNAME/xui-panel-manager.git
+git clone https://github.com/sepehringo/xui-panel-manager.git
 cd xui-panel-manager
 
 # 3. کپی همه فایل‌ها به repo
@@ -51,7 +51,7 @@ git push origin main
 ssh root@YOUR_SERVER_IP
 
 # دانلود و نصب
-wget https://raw.githubusercontent.com/YOUR_USERNAME/xui-panel-manager/main/xui-panel-manager-installer.sh
+wget https://raw.githubusercontent.com/sepehringo/xui-panel-manager/main/xui-panel-manager-installer.sh
 chmod +x xui-panel-manager-installer.sh
 sudo ./xui-panel-manager-installer.sh
 ```
@@ -527,7 +527,7 @@ chmod 644 /etc/xui-panel-manager/*.json
 ```bash
 # دانلود نسخه جدید
 cd /tmp
-wget https://raw.githubusercontent.com/YOUR_USERNAME/xui-panel-manager/main/xui-panel-manager-installer.sh
+wget https://raw.githubusercontent.com/sepehringo/xui-panel-manager/main/xui-panel-manager-installer.sh
 chmod +x xui-panel-manager-installer.sh
 
 # توقف services
