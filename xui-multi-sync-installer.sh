@@ -1258,11 +1258,21 @@ if [[ -z "$DB_PATH" ]] || [[ ! -f "$DB_PATH" ]]; then
   exit 1
 fi
 
-echo "Watcher: monitoring $DB_PATH"
+# SQLite WAL mode: actual writes go to db-wal, not the main db file.
+# Watch both so we catch all write activity.
+WATCH_FILES=("$DB_PATH")
+[[ -f "${DB_PATH}-wal" ]] && WATCH_FILES+=("${DB_PATH}-wal")
+
+echo "Watcher: monitoring ${WATCH_FILES[*]}"
 while true; do
-  inotifywait -q -e close_write,modify "$DB_PATH" 2>/dev/null || { sleep 5; continue; }
+  # Re-check WAL file existence each loop (created on first write)
+  WATCH_FILES=("$DB_PATH")
+  [[ -f "${DB_PATH}-wal" ]] && WATCH_FILES+=("${DB_PATH}-wal")
+
+  inotifywait -q -e close_write,modify "${WATCH_FILES[@]}" 2>/dev/null || { sleep 5; continue; }
   sleep "$DEBOUNCE"
-  while inotifywait -q -t 1 -e close_write,modify "$DB_PATH" 2>/dev/null; do
+  # Drain rapid bursts
+  while inotifywait -q -t 1 -e close_write,modify "${WATCH_FILES[@]}" 2>/dev/null; do
     sleep 1
   done
   /usr/bin/python3 "$SYNC_SCRIPT" --quick 2>&1 | systemd-cat -t xui-multi-sync-watcher || true
@@ -1941,6 +1951,12 @@ run_update() {
   # Re-extract sync.py from the newly downloaded script (NOT from current in-memory process)
   bash "$script_dst" --write-sync
 
+  # Re-deploy systemd units (watcher.sh + service files) from new script
+  bash "$script_dst" --write-units
+
+  # Restart watcher if it was running
+  systemctl restart "${SERVICE_NAME}-watcher.service" 2>/dev/null || true
+
   echo ""
   if [[ "$LANG_CURRENT" == "fa" ]]; then
     ok "بروزرسانی با موفقیت انجام شد!"
@@ -2117,6 +2133,20 @@ _install_commands() {
 # Main entry point
 if [[ "${1:-}" == "--write-sync" ]]; then
   write_sync_script
+  exit 0
+fi
+
+if [[ "${1:-}" == "--write-units" ]]; then
+  _interval_sec=$(python3 -c "
+import json
+try:
+  c = json.load(open('$CONF'))
+  print(int(c.get('sync_interval_minutes', 60)) * 60)
+except:
+  print(3600)
+" 2>/dev/null || echo 3600)
+  write_systemd_units "$_interval_sec"
+  systemctl enable "${SERVICE_NAME}-watcher.service" 2>/dev/null || true
   exit 0
 fi
 
