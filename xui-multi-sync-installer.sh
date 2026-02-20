@@ -964,32 +964,106 @@ add_server() {
   info "$(msg add_server)"
   echo ""
 
-  # ── Step 1: collect minimal info ──────────────────────────────────────────
+  # ── Step 1: collect and validate inputs ─────────────────────────────────
+  local name host port user
+
+  # Name: non-empty + no duplicate
+  while true; do
+    if [[ "$LANG_CURRENT" == "fa" ]]; then
+      read -r -p "نام سرور (مثلاً: Server-1): " name
+    else
+      read -r -p "Server name (e.g., Server-1): " name
+    fi
+    if [[ -z "$name" ]]; then
+      if [[ "$LANG_CURRENT" == "fa" ]]; then
+        warn "نام سرور نمی‌تواند خالی باشد."
+      else
+        warn "Server name cannot be empty."
+      fi
+      continue
+    fi
+    if jq -e --arg n "$name" '.servers[] | select(.name == $n)' "$SERVERS_CONF" >/dev/null 2>&1; then
+      if [[ "$LANG_CURRENT" == "fa" ]]; then
+        warn "سروری با نام '$name' قبلاً وجود دارد. نام دیگری انتخاب کنید."
+      else
+        warn "A server named '$name' already exists. Choose a different name."
+      fi
+      continue
+    fi
+    break
+  done
+
+  # Host: non-empty; warn on duplicate but allow
+  while true; do
+    if [[ "$LANG_CURRENT" == "fa" ]]; then
+      read -r -p "آدرس IP/Host: " host
+    else
+      read -r -p "IP/Host address: " host
+    fi
+    if [[ -z "$host" ]]; then
+      if [[ "$LANG_CURRENT" == "fa" ]]; then
+        warn "آدرس نمی‌تواند خالی باشد."
+      else
+        warn "Address cannot be empty."
+      fi
+      continue
+    fi
+    if jq -e --arg h "$host" '.servers[] | select(.host == $h)' "$SERVERS_CONF" >/dev/null 2>&1; then
+      local dup_ok
+      if [[ "$LANG_CURRENT" == "fa" ]]; then
+        read -r -p "⚠ این آدرس قبلاً اضافه شده. ادامه می‌دهید؟ [y/N]: " dup_ok
+      else
+        read -r -p "⚠ This host is already in the servers list. Continue? [y/N]: " dup_ok
+      fi
+      [[ "$dup_ok" =~ ^[Yy]$ ]] || continue
+    fi
+    break
+  done
+
+  # Port: numeric, 1-65535
+  while true; do
+    if [[ "$LANG_CURRENT" == "fa" ]]; then
+      read -r -p "پورت SSH [22]: " port
+    else
+      read -r -p "SSH port [22]: " port
+    fi
+    port="${port:-22}"
+    if [[ ! "$port" =~ ^[0-9]+$ ]] || [[ "$port" -lt 1 ]] || [[ "$port" -gt 65535 ]]; then
+      if [[ "$LANG_CURRENT" == "fa" ]]; then
+        warn "پورت باید عددی بین ۱ تا ۶۵۵۳۵ باشد."
+      else
+        warn "Port must be a number between 1 and 65535."
+      fi
+      port=""
+      continue
+    fi
+    break
+  done
+
+  # User: default root
   if [[ "$LANG_CURRENT" == "fa" ]]; then
-    read -r -p "نام سرور (مثلاً: Server-1): " name
-    [[ -z "$name" ]] && { warn "نام سرور نمی‌تواند خالی باشد"; return; }
-
-    read -r -p "آدرس IP/Host: " host
-    [[ -z "$host" ]] && { warn "آدرس نمی‌تواند خالی باشد"; return; }
-
-    read -r -p "پورت SSH [22]: " port
-    port="${port:-22}"
-
     read -r -p "کاربر SSH [root]: " user
-    user="${user:-root}"
   else
-    read -r -p "Server name (e.g., Server-1): " name
-    [[ -z "$name" ]] && { warn "Server name cannot be empty"; return; }
-
-    read -r -p "IP/Host address: " host
-    [[ -z "$host" ]] && { warn "Address cannot be empty"; return; }
-
-    read -r -p "SSH port [22]: " port
-    port="${port:-22}"
-
     read -r -p "SSH user [root]: " user
-    user="${user:-root}"
   fi
+  user="${user:-root}"
+
+  # ── Helper: remove conflicting known_hosts entry ──────────────────────────
+  _fix_known_hosts() {
+    ssh-keygen -R "${host}" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true
+    if [[ "$port" != "22" ]]; then
+      ssh-keygen -R "[${host}]:${port}" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true
+    fi
+    # Also check system-wide known_hosts
+    [[ -f /etc/ssh/ssh_known_hosts ]] && \
+      ssh-keygen -R "${host}" -f /etc/ssh/ssh_known_hosts >/dev/null 2>&1 || true
+  }
+
+  # ── Helper: detect known_hosts conflict in SSH error output ───────────────
+  _is_known_hosts_error() {
+    local output="$1"
+    echo "$output" | grep -qiE "REMOTE HOST IDENTIFICATION|Host key verification failed|WARNING.*IDENTIFICATION HAS CHANGED"
+  }
 
   # ── Step 2: copy SSH key first (needed for auto-detect) ───────────────────
   echo ""
@@ -999,18 +1073,49 @@ add_server() {
     info "Copying SSH key to $host..."
   fi
 
-  if ! ssh-copy-id -i "${SSH_KEY}.pub" -p "$port" "${user}@${host}" 2>/dev/null; then
-    if [[ "$LANG_CURRENT" == "fa" ]]; then
-      warn "کپی خودکار کلید ناموفق بود. لطفاً کلید را دستی کپی کنید:"
-    else
-      warn "Auto key-copy failed. Copy the key manually:"
+  local copy_err
+  copy_err=$(ssh-copy-id \
+    -i "${SSH_KEY}.pub" \
+    -p "$port" \
+    -o StrictHostKeyChecking=accept-new \
+    -o ConnectTimeout=10 \
+    "${user}@${host}" 2>&1)
+  local copy_rc=$?
+
+  if [[ $copy_rc -ne 0 ]]; then
+    if _is_known_hosts_error "$copy_err"; then
+      if [[ "$LANG_CURRENT" == "fa" ]]; then
+        warn "کلید هاست در known_hosts تغییر کرده. در حال حذف خودکار و تلاش مجدد..."
+      else
+        warn "Host key conflict in known_hosts. Removing old entry and retrying..."
+      fi
+      _fix_known_hosts
+      copy_err=$(ssh-copy-id \
+        -i "${SSH_KEY}.pub" \
+        -p "$port" \
+        -o StrictHostKeyChecking=accept-new \
+        -o ConnectTimeout=10 \
+        "${user}@${host}" 2>&1)
+      copy_rc=$?
     fi
-    echo "  ssh-copy-id -i ${SSH_KEY}.pub -p $port ${user}@${host}"
-    echo ""
-    if [[ "$LANG_CURRENT" == "fa" ]]; then
-      read -r -p "بعد از کپی دستی Enter بزنید تا ادامه دهیم (یا Ctrl+C برای لغو): " _
-    else
-      read -r -p "Press Enter after copying manually (or Ctrl+C to cancel): " _
+
+    if [[ $copy_rc -ne 0 ]]; then
+      if [[ "$LANG_CURRENT" == "fa" ]]; then
+        warn "کپی خودکار کلید ناموفق بود:"
+        warn "  $copy_err"
+        warn "لطفاً کلید را دستی کپی کنید:"
+      else
+        warn "Auto key-copy failed:"
+        warn "  $copy_err"
+        warn "Copy the key manually:"
+      fi
+      echo "  ssh-copy-id -i ${SSH_KEY}.pub -p $port ${user}@${host}"
+      echo ""
+      if [[ "$LANG_CURRENT" == "fa" ]]; then
+        read -r -p "بعد از کپی دستی Enter بزنید تا ادامه دهیم (یا Ctrl+C برای لغو): " _
+      else
+        read -r -p "Press Enter after copying manually (or Ctrl+C to cancel): " _
+      fi
     fi
   fi
 
@@ -1021,7 +1126,7 @@ add_server() {
     info "Testing SSH connection to $host..."
   fi
 
-  local ssh_test
+  local ssh_test ssh_rc
   ssh_test=$(ssh \
     -i "$SSH_KEY" \
     -p "$port" \
@@ -1029,25 +1134,70 @@ add_server() {
     -o StrictHostKeyChecking=accept-new \
     -o ConnectTimeout=10 \
     "${user}@${host}" \
-    "echo OK" 2>&1) || {
+    "echo OK" 2>&1)
+  ssh_rc=$?
+
+  # Auto-fix known_hosts conflict on the test connection too
+  if [[ $ssh_rc -ne 0 ]] && _is_known_hosts_error "$ssh_test"; then
+    if [[ "$LANG_CURRENT" == "fa" ]]; then
+      warn "مشکل known_hosts شناسایی شد. در حال حذف خودکار و تلاش مجدد..."
+    else
+      warn "known_hosts conflict detected. Removing old entry and retrying..."
+    fi
+    _fix_known_hosts
+    ssh_test=$(ssh \
+      -i "$SSH_KEY" \
+      -p "$port" \
+      -o BatchMode=yes \
+      -o StrictHostKeyChecking=accept-new \
+      -o ConnectTimeout=10 \
+      "${user}@${host}" \
+      "echo OK" 2>&1)
+    ssh_rc=$?
+  fi
+
+  if [[ $ssh_rc -ne 0 ]]; then
     err ""
+    # Detect specific failure reason
+    local _reason
+    if echo "$ssh_test" | grep -qiE "timed out|Connection timed out"; then
+      if [[ "$LANG_CURRENT" == "fa" ]]; then
+        _reason="اتصال SSH بعد از ۱۰ ثانیه قطع شد. سرور در دسترس نیست یا پورت اشتباه است."
+      else
+        _reason="SSH connection timed out after 10 seconds. Server unreachable or wrong port ($port)."
+      fi
+    elif echo "$ssh_test" | grep -qiE "Connection refused"; then
+      if [[ "$LANG_CURRENT" == "fa" ]]; then
+        _reason="اتصال رد شد. آیا SSH روی پورت $port در حال اجراست؟"
+      else
+        _reason="Connection refused. Is SSH running on port $port?"
+      fi
+    elif echo "$ssh_test" | grep -qiE "No route to host|Network is unreachable|Could not resolve"; then
+      if [[ "$LANG_CURRENT" == "fa" ]]; then
+        _reason="مسیری به $host وجود ندارد. آدرس IP را بررسی کنید."
+      else
+        _reason="No route to $host. Check the IP address."
+      fi
+    elif echo "$ssh_test" | grep -qiE "Permission denied|Authentication failed"; then
+      if [[ "$LANG_CURRENT" == "fa" ]]; then
+        _reason="احراز هویت ناموفق. کلید SSH در authorized_keys سرور نیست."
+      else
+        _reason="Authentication failed. SSH key not in server's authorized_keys."
+      fi
+    else
+      _reason="$ssh_test"
+    fi
     if [[ "$LANG_CURRENT" == "fa" ]]; then
       err "اتصال SSH به $host ناموفق بود:"
-      err "  $ssh_test"
-      err "سرور اضافه نشد. موارد زیر را بررسی کنید:"
-      echo "  • آیا سرور در دسترس است؟ (ping $host)"
-      echo "  • پورت SSH صحیح است؟ (پورت $port)"
-      echo "  • کلید SSH در authorized_keys سرور وجود دارد؟"
+      err "  $_reason"
+      err "سرور اضافه نشد."
     else
       err "SSH connection to $host failed:"
-      err "  $ssh_test"
-      err "Server not added. Check the following:"
-      echo "  • Is the server reachable? (ping $host)"
-      echo "  • Is the SSH port correct? (port $port)"
-      echo "  • Is the SSH key in the server's authorized_keys?"
+      err "  $_reason"
+      err "Server not added."
     fi
     return 1
-  }
+  fi
 
   # ── Step 4: auto-detect service name and DB path on remote ────────────────
   if [[ "$LANG_CURRENT" == "fa" ]]; then
@@ -1059,28 +1209,68 @@ add_server() {
   local detect_cmd
   detect_cmd='SERVICE=""; for s in x-ui xui 3x-ui xray-ui; do systemctl list-unit-files 2>/dev/null | grep -q "${s}.service" && SERVICE="$s" && break; done; echo "${SERVICE:-x-ui}"; DB=""; for p in /etc/x-ui/x-ui.db /usr/local/x-ui/x-ui.db /var/lib/x-ui/x-ui.db /opt/x-ui/x-ui.db /etc/3x-ui/x-ui.db; do [ -f "$p" ] && DB="$p" && break; done; echo "${DB:-/etc/x-ui/x-ui.db}"'
 
-  local detect_out
+  local detect_out detect_rc
   detect_out=$(ssh \
     -i "$SSH_KEY" \
     -p "$port" \
     -o BatchMode=yes \
     -o ConnectTimeout=10 \
     "${user}@${host}" \
-    "$detect_cmd" 2>/dev/null) || detect_out="x-ui
-/etc/x-ui/x-ui.db"
+    "$detect_cmd" 2>&1)
+  detect_rc=$?
 
-  local service_name db_path
+  if [[ $detect_rc -ne 0 ]]; then
+    if [[ "$LANG_CURRENT" == "fa" ]]; then
+      warn "تشخیص خودکار ناموفق بود (خطا: $detect_out). از مقادیر پیش‌فرض استفاده می‌شود."
+    else
+      warn "Auto-detect failed ($detect_out). Falling back to defaults."
+    fi
+    detect_out="x-ui
+/etc/x-ui/x-ui.db"
+  fi
+
+  local service_name db_path _svc_detected=true _db_detected=true
   service_name=$(echo "$detect_out" | sed -n '1p')
   db_path=$(echo "$detect_out" | sed -n '2p')
-  service_name="${service_name:-x-ui}"
-  db_path="${db_path:-/etc/x-ui/x-ui.db}"
 
-  if [[ "$LANG_CURRENT" == "fa" ]]; then
-    ok "سرویس تشخیص داده شد: $service_name"
-    ok "مسیر دیتابیس: $db_path"
+  # Check if service detection fell back (empty result means none found)
+  if [[ -z "$service_name" ]]; then
+    service_name="x-ui"
+    _svc_detected=false
+  fi
+  if [[ -z "$db_path" ]]; then
+    db_path="/etc/x-ui/x-ui.db"
+    _db_detected=false
+  fi
+
+  if [[ "$_svc_detected" == true ]]; then
+    if [[ "$LANG_CURRENT" == "fa" ]]; then
+      ok "سرویس تشخیص داده شد: $service_name"
+    else
+      ok "Detected service: $service_name"
+    fi
   else
-    ok "Detected service: $service_name"
-    ok "Detected database: $db_path"
+    if [[ "$LANG_CURRENT" == "fa" ]]; then
+      warn "سرویس x-ui پیدا نشد. مقدار پیش‌فرض 'x-ui' استفاده می‌شود."
+    else
+      warn "No x-ui service found on remote. Defaulting to 'x-ui'."
+    fi
+  fi
+
+  if [[ "$_db_detected" == true ]]; then
+    if [[ "$LANG_CURRENT" == "fa" ]]; then
+      ok "مسیر دیتابیس: $db_path"
+    else
+      ok "Detected database: $db_path"
+    fi
+  else
+    if [[ "$LANG_CURRENT" == "fa" ]]; then
+      warn "فایل دیتابیس پیدا نشد. مسیر پیش‌فرض '/etc/x-ui/x-ui.db' استفاده می‌شود."
+      warn "اگر این مسیر اشتباه است، بعداً سرور را حذف و دوباره اضافه کنید."
+    else
+      warn "Database file not found on remote. Defaulting to '/etc/x-ui/x-ui.db'."
+      warn "If this is wrong, remove and re-add this server after fixing the path."
+    fi
   fi
 
   # ── Step 5: save to config ─────────────────────────────────────────────────
@@ -1523,6 +1713,7 @@ install_mode() {
   add_now="${add_now:-Y}"
   
   if [[ "$add_now" =~ ^[Yy]$ ]]; then
+    add_server
     main_menu
   fi
 }
@@ -1533,5 +1724,13 @@ if [[ ! -f "$CONF" ]] || [[ ! -f "$SERVERS_CONF" ]]; then
 else
   need_root
   load_language
+  # Self-repair: recreate global command symlinks if missing or broken
+  if [[ ! -e "$BINCMD" ]] || [[ ! -e "$BIN" ]]; then
+    _dst="$APP_DIR/xuisync.sh"
+    cp -f "$(readlink -f "$0")" "$_dst" 2>/dev/null || true
+    chmod +x "$_dst" 2>/dev/null || true
+    ln -sf "$_dst" "$BIN"    2>/dev/null || true
+    ln -sf "$_dst" "$BINCMD" 2>/dev/null || true
+  fi
   main_menu
 fi
