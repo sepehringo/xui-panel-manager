@@ -1918,8 +1918,8 @@ run_update() {
   ln -sf "$script_dst" "$BIN"
   ln -sf "$script_dst" "$BINCMD"
 
-  # Redeploy the embedded Python sync script
-  write_sync_script
+  # Re-extract sync.py from the newly downloaded script (NOT from current in-memory process)
+  bash "$script_dst" --write-sync
 
   echo ""
   if [[ "$LANG_CURRENT" == "fa" ]]; then
@@ -2095,6 +2095,11 @@ _install_commands() {
 }
 
 # Main entry point
+if [[ "${1:-}" == "--write-sync" ]]; then
+  write_sync_script
+  exit 0
+fi
+
 if [[ ! -f "$CONF" ]] || [[ ! -f "$SERVERS_CONF" ]]; then
   install_mode
 else
