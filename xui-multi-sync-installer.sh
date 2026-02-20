@@ -377,8 +377,13 @@ def calculate_remote_deltas(
         snap = state_servers.get(server_name, {})
         for row in rows:
             email = row["email"]
-            prev_up   = snap.get(email, {}).get("up",   0)
-            prev_down = snap.get(email, {}).get("down", 0)
+            # If this email has no prior snapshot on this server, it's either
+            # a brand-new client or a new inbound just added. Treat delta as 0
+            # so we don't add the entire accumulated traffic to master.
+            if email not in snap:
+                continue
+            prev_up   = snap[email].get("up",   0)
+            prev_down = snap[email].get("down", 0)
             d_up   = max(0, row["up"]   - prev_up)
             d_down = max(0, row["down"] - prev_down)
             if d_up or d_down:
@@ -555,7 +560,7 @@ for item in payload:
 
         cur.execute('UPDATE inbounds SET settings=? WHERE id=?', (new_settings, ib_id))
 
-        # Insert traffic row
+        # Insert traffic row — use the REMOTE's inbound_id (ib_id), not master's
         cur.execute('''
             INSERT OR IGNORE INTO client_traffics
             (inbound_id, enable, email, up, down, expiry_time, total)
