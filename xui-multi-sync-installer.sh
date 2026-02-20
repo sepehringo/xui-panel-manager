@@ -612,10 +612,10 @@ for item in payload:
                 ib_data.get('listen', ''),
                 int(ib_data.get('port', 0)),
                 ib_data.get('protocol', ''),
-                ib_data.get('settings', '{}'),
-                ib_data.get('stream_settings', '{}'),
+                ib_data.get('settings', '{{}}'),
+                ib_data.get('stream_settings', '{{}}'),
                 ib_data.get('tag', ''),
-                ib_data.get('sniffing', '{}'),
+                ib_data.get('sniffing', '{{}}'),
             ))
             ib_id = cur.lastrowid
             # settings was already inserted with all clients from master
