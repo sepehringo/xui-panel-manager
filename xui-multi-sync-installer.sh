@@ -78,6 +78,7 @@ msg() {
         "menu_8") echo "نمایش لاگ‌ها" ;;
         "menu_9") echo "تغییر زبان" ;;
         "menu_u") echo "حذف سیستم" ;;
+        "menu_update") echo "بروزرسانی" ;;
         "menu_0") echo "خروج" ;;
         "choose_lang") echo "انتخاب زبان / Choose Language" ;;
         "install_complete") echo "نصب با موفقیت انجام شد!" ;;
@@ -127,6 +128,7 @@ msg() {
         "menu_8") echo "Show Logs" ;;
         "menu_9") echo "Change Language" ;;
         "menu_u") echo "Uninstall" ;;
+        "menu_update") echo "Update" ;;
         "menu_0") echo "Exit" ;;
         "choose_lang") echo "انتخاب زبان / Choose Language" ;;
         "install_complete") echo "Installation completed successfully!" ;;
@@ -761,26 +763,42 @@ def sync_all():
             logger.warn("No remote servers reachable — nothing to sync")
             return
 
-        # ── 3. Detect master resets ──────────────────────────────────────────
+        # ── 3. First-sync detection ───────────────────────────────────────────
+        # If state is empty this is the very first run (or state was wiped).
+        # Existing traffic on remotes must NOT be treated as new delta —
+        # doing so would double-count every byte already consumed.
+        # Instead: push master values to all remotes as a baseline and save
+        # the snapshot.  Future syncs will calculate true deltas from here.
+        is_first_sync = not state.get("servers")
+        if is_first_sync:
+            logger.warn("=" * 40)
+            logger.warn("FIRST SYNC — establishing baseline snapshot.")
+            logger.warn("No delta accumulation this round.")
+            logger.warn("=" * 40)
+
+        # ── 4. Detect master resets (skip on first sync — no reference point) ─
         master_snap = state.get("servers", {}).get("master", {})
-        resets = detect_resets(master_stats, master_snap)
+        resets = detect_resets(master_stats, master_snap) if not is_first_sync else set()
 
-        # ── 4. Calculate remote deltas ────────────────────────────────────────
-        logger.info("-" * 40)
-        logger.info("Calculating remote deltas...")
-        remote_deltas = calculate_remote_deltas(remote_data, state.get("servers", {}))
+        # ── 5. Calculate remote deltas (skip on first sync) ───────────────────
+        if not is_first_sync:
+            logger.info("-" * 40)
+            logger.info("Calculating remote deltas...")
+            remote_deltas = calculate_remote_deltas(remote_data, state.get("servers", {}))
+        else:
+            remote_deltas = {}
 
-        # ── 5. Build merged dataset ───────────────────────────────────────────
+        # ── 6. Build merged dataset ───────────────────────────────────────────
         logger.info("-" * 40)
         logger.info("Building merged dataset...")
         merged = build_merged(master_stats, remote_deltas, resets)
 
-        # ── 6. Apply to master ────────────────────────────────────────────────
+        # ── 7. Apply to master ────────────────────────────────────────────────
         logger.info("-" * 40)
         logger.info("Writing to master...")
         apply_to_master(local_db, local_service, merged)
 
-        # ── 7. For each reachable remote: push new clients + apply stats ──────
+        # ── 8. For each reachable remote: push new clients + apply stats ──────
         logger.info("-" * 40)
         logger.info("Writing to remotes...")
         for srv in servers:
@@ -798,7 +816,7 @@ def sync_all():
             except Exception as e:
                 logger.error(f"Failed writing to {name}: {e}")
 
-        # ── 8. Save state ─────────────────────────────────────────────────────
+        # ── 9. Save state ─────────────────────────────────────────────────────
         save_state(merged, remote_data)
 
         logger.success("=" * 60)
@@ -1315,6 +1333,57 @@ run_uninstaller() {
   exit 0
 }
 
+run_update() {
+  local url="https://raw.githubusercontent.com/sepehringo/xui-panel-manager/main/xui-multi-sync-installer.sh"
+  local script_dst="$APP_DIR/xuisync.sh"
+
+  if [[ "$LANG_CURRENT" == "fa" ]]; then
+    info "دریافت آخرین نسخه از GitHub..."
+  else
+    info "Fetching latest version from GitHub..."
+  fi
+
+  local tmp
+  tmp=$(mktemp)
+  if ! curl -fsSL "$url" -o "$tmp"; then
+    rm -f "$tmp"
+    if [[ "$LANG_CURRENT" == "fa" ]]; then
+      err "دانلود ناموفق بود. اتصال اینترنت را بررسی کنید."
+    else
+      err "Download failed. Check your internet connection."
+    fi
+    return 1
+  fi
+
+  if [[ ! -s "$tmp" ]]; then
+    rm -f "$tmp"
+    err "Downloaded file is empty."
+    return 1
+  fi
+
+  # Replace the script in permanent location
+  cp -f "$tmp" "$script_dst"
+  chmod +x "$script_dst"
+  rm -f "$tmp"
+
+  # Recreate global command symlinks
+  ln -sf "$script_dst" "$BIN"
+  ln -sf "$script_dst" "$BINCMD"
+
+  # Redeploy the embedded Python sync script
+  write_sync_script
+
+  echo ""
+  if [[ "$LANG_CURRENT" == "fa" ]]; then
+    ok "بروزرسانی با موفقیت انجام شد!"
+    info "برای اجرا دستور زیر را وارد کنید: sudo xuisync"
+  else
+    ok "Update completed successfully!"
+    info "Run: sudo xuisync"
+  fi
+  sleep 2
+}
+
 main_menu() {
   while true; do
     clear
@@ -1332,10 +1401,11 @@ main_menu() {
     echo "7) $(msg menu_7)"
     echo "8) $(msg menu_8)"
     echo "9) $(msg menu_9)"
-    echo "U) $(msg menu_u)"
+    echo "U) $(msg menu_update)"
+    echo "remove) $(msg menu_u)"
     echo "0) $(msg menu_0)"
     echo ""
-    read -r -p "Select / انتخاب [0-9,U]: " choice
+    read -r -p "Select / انتخاب [0-9, U, remove]: " choice
     
     case "$choice" in
       1) show_status; 
@@ -1372,7 +1442,8 @@ main_menu() {
          ;;
       8) show_logs ;;
       9) choose_language ;;
-      [Uu]) run_uninstaller ;;
+      [Uu]) run_update ;;
+      remove|REMOVE|Remove) run_uninstaller ;;
       0) ok "$(msg exit)"; exit 0 ;;
       *) warn "Invalid choice" ;;
     esac
@@ -1416,12 +1487,12 @@ install_mode() {
   write_systemd_units "$interval_sec"
   enable_timer
 
-  # Create global commands
-  local script_path
-  script_path="$(readlink -f "$0")"
-  ln -sf "$script_path" "$BIN"    2>/dev/null || cp -f "$script_path" "$BIN"
-  ln -sf "$script_path" "$BINCMD" 2>/dev/null || cp -f "$script_path" "$BINCMD"
-  chmod +x "$BIN" "$BINCMD" 2>/dev/null || true
+  # Install script to permanent location and create global commands
+  local script_dst="$APP_DIR/xuisync.sh"
+  cp -f "$(readlink -f "$0")" "$script_dst"
+  chmod +x "$script_dst"
+  ln -sf "$script_dst" "$BIN"
+  ln -sf "$script_dst" "$BINCMD"
 
   echo ""
   ok "$(msg install_complete)"
