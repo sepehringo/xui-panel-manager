@@ -172,7 +172,7 @@ need_root() {
 install_deps() {
   info "$(msg installing_deps)"
   apt-get update -qq >/dev/null 2>&1
-  DEBIAN_FRONTEND=noninteractive apt-get install -y python3 sqlite3 openssh-client jq >/dev/null 2>&1
+  DEBIAN_FRONTEND=noninteractive apt-get install -y python3 sqlite3 openssh-client jq inotify-tools >/dev/null 2>&1
   ok "$(msg deps_installed)"
 }
 
@@ -233,27 +233,67 @@ LOG_FILE     = "/var/log/xui-multi-sync.log"
 # ── Logger ────────────────────────────────────────────────────────────────────
 
 class Logger:
-    def __init__(self, log_file):
-        self.log_file = log_file
-        self._lock = threading.Lock()
+    _RST    = "\033[0m"
+    _COLORS = {
+        "INFO":    "\033[36m",
+        "WARN":    "\033[33m",
+        "ERROR":   "\033[31m",
+        "SUCCESS": "\033[32m",
+        "NEW":     "\033[1;32m",
+        "RESET":   "\033[1;35m",
+        "TRAFFIC": "\033[34m",
+        "CHANGE":  "\033[1;33m",
+    }
+    _ICONS = {
+        "INFO": "•", "WARN": "⚠", "ERROR": "✗", "SUCCESS": "✓",
+        "NEW": "+", "RESET": "↺", "TRAFFIC": "↕", "CHANGE": "~",
+    }
 
-    def log(self, level, msg):
+    def __init__(self, log_file: str):
+        self.log_file  = log_file
+        self._lock     = threading.Lock()
+        self._err_list: List[str] = []
+
+    def _tty(self) -> bool:
+        return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+    def log(self, level: str, msg: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        line = f"[{timestamp}] [{level}] {msg}"
+        icon  = self._ICONS.get(level, "•")
+        plain = f"[{timestamp}] [{level}] {icon} {msg}"
+        line  = f"{self._COLORS.get(level,'')}{plain}{self._RST}" if self._tty() else plain
         with self._lock:
-            print(line)
+            print(line, flush=True)
+            if level == "ERROR":
+                self._err_list.append(msg)
             try:
                 with open(self.log_file, "a", encoding="utf-8") as f:
-                    f.write(line + "\n")
+                    f.write(plain + "\n")
             except Exception:
                 pass
 
-    def info(self, msg):    self.log("INFO",    msg)
-    def warn(self, msg):    self.log("WARN",    msg)
-    def error(self, msg):   self.log("ERROR",   msg)
-    def success(self, msg): self.log("SUCCESS", msg)
+    def info(self, msg):       self.log("INFO",    msg)
+    def warn(self, msg):       self.log("WARN",    msg)
+    def error(self, msg):      self.log("ERROR",   msg)
+    def success(self, msg):    self.log("SUCCESS", msg)
+    def new_client(self, msg): self.log("NEW",     msg)
+    def reset_ev(self, msg):   self.log("RESET",   msg)
+    def traffic(self, msg):    self.log("TRAFFIC", msg)
+    def change(self, msg):     self.log("CHANGE",  msg)
+
+    @property
+    def error_count(self) -> int:
+        return len(self._err_list)
 
 logger = Logger(LOG_FILE)
+
+def fmt_bytes(n: int) -> str:
+    """Format byte count as human-readable string."""
+    n = abs(int(n or 0))
+    if n < 1024:        return f"{n} B"
+    if n < 1024 ** 2:   return f"{n / 1024:.1f} KB"
+    if n < 1024 ** 3:   return f"{n / 1024 ** 2:.1f} MB"
+    return f"{n / 1024 ** 3:.2f} GB"
 
 # ── JSON helpers ──────────────────────────────────────────────────────────────
 
@@ -766,7 +806,13 @@ def save_state(merged: Dict[str, dict], remote_data: Dict[str, List[dict]]):
 
     # Master: save merged (= what we wrote to master)
     state["servers"]["master"] = {
-        row["email"]: {"up": row["up"], "down": row["down"], "expiry_time": row["expiry_time"]}
+        row["email"]: {
+            "up":          row["up"],
+            "down":        row["down"],
+            "expiry_time": row["expiry_time"],
+            "total":       row["total"],
+            "enable":      row["enable"],
+        }
         for row in merged.values()
     }
 
@@ -780,9 +826,9 @@ def save_state(merged: Dict[str, dict], remote_data: Dict[str, List[dict]]):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def sync_all():
-    logger.info("=" * 60)
+    logger.info("═" * 60)
     logger.info("XUI Multi-Server Delta-Based Sync v2")
-    logger.info("=" * 60)
+    logger.info("═" * 60)
 
     try:
         config  = load_json(CONF_FILE)
@@ -796,7 +842,7 @@ def sync_all():
             logger.error("Master DB not found: " + local_db)
             sys.exit(1)
 
-        # ── 1. Fetch master (stats + inbounds) ──────────────────────────────
+        # ── 1. Fetch master ──────────────────────────────────────────────────
         master_stats, master_inbounds = fetch_master(local_db)
         master_emails = {r["email"] for r in master_stats}
 
@@ -824,65 +870,126 @@ def sync_all():
             return
 
         # ── 3. First-sync detection ───────────────────────────────────────────
-        # If state is empty this is the very first run (or state was wiped).
-        # Existing traffic on remotes must NOT be treated as new delta —
-        # doing so would double-count every byte already consumed.
-        # Instead: push master values to all remotes as a baseline and save
-        # the snapshot.  Future syncs will calculate true deltas from here.
         is_first_sync = not state.get("servers")
         if is_first_sync:
-            logger.warn("=" * 40)
+            logger.warn("═" * 40)
             logger.warn("FIRST SYNC — establishing baseline snapshot.")
             logger.warn("No delta accumulation this round.")
-            logger.warn("=" * 40)
+            logger.warn("═" * 40)
 
-        # ── 4. Detect master resets (skip on first sync — no reference point) ─
+        # ── 4. Detect master resets ───────────────────────────────────────────
         master_snap = state.get("servers", {}).get("master", {})
-        resets = detect_resets(master_stats, master_snap) if not is_first_sync else set()
-
-        # ── 5. Calculate remote deltas (skip on first sync) ───────────────────
         if not is_first_sync:
-            logger.info("-" * 40)
+            resets = detect_resets(master_stats, master_snap)
+            if resets:
+                logger.info("─" * 50)
+                for email in sorted(resets):
+                    logger.reset_ev(
+                        f"  [RESET] {email} — traffic zeroed on master "
+                        f"→ will force-reset all remotes"
+                    )
+        else:
+            resets = set()
+
+        # ── 5. Calculate remote deltas ────────────────────────────────────────
+        if not is_first_sync:
+            logger.info("─" * 50)
             logger.info("Calculating remote deltas...")
             remote_deltas = calculate_remote_deltas(remote_data, state.get("servers", {}))
+            if remote_deltas:
+                for email, d in sorted(remote_deltas.items()):
+                    if d["delta_up"] or d["delta_down"]:
+                        logger.traffic(
+                            f"  [DELTA] {email} — "
+                            f"+{fmt_bytes(d['delta_up'])} up  "
+                            f"+{fmt_bytes(d['delta_down'])} down"
+                        )
         else:
             remote_deltas = {}
 
         # ── 6. Build merged dataset ───────────────────────────────────────────
-        logger.info("-" * 40)
-        logger.info("Building merged dataset...")
+        logger.info("─" * 50)
         merged = build_merged(master_stats, remote_deltas, resets)
 
+        # ── Detailed per-client report ────────────────────────────────────────
+        logger.info("─" * 50)
+        logger.info("📊 CLIENT REPORT:")
+        new_count = reset_count = delta_count = 0
+        for email, row in sorted(merged.items()):
+            if email not in master_snap:
+                status = "ENABLED ✓" if row["enable"] else "DISABLED ✗"
+                logger.new_client(
+                    f"  [NEW]     {email:<28} "
+                    f"↑{fmt_bytes(row['up'])} ↓{fmt_bytes(row['down'])}  "
+                    f"quota:{fmt_bytes(row['total'])}  {status}"
+                )
+                new_count += 1
+            elif email in resets:
+                logger.reset_ev(
+                    f"  [RESET]   {email:<28} traffic zeroed on master"
+                )
+                reset_count += 1
+            else:
+                prev   = master_snap.get(email, {})
+                d_up   = row["up"]   - prev.get("up",   0)
+                d_down = row["down"] - prev.get("down", 0)
+                if d_up > 0 or d_down > 0:
+                    logger.traffic(
+                        f"  [TRAFFIC] {email:<28} "
+                        f"total ↑{fmt_bytes(row['up'])} ↓{fmt_bytes(row['down'])}  "
+                        f"Δ +{fmt_bytes(d_up)} / +{fmt_bytes(d_down)}"
+                    )
+                    delta_count += 1
+        logger.info(
+            f"  ─ {new_count} new  |  {reset_count} resets  |  "
+            f"{delta_count} with traffic Δ  |  {len(merged)} total"
+        )
+
         # ── 7. Apply to master ────────────────────────────────────────────────
-        logger.info("-" * 40)
-        logger.info("Writing to master...")
+        logger.info("─" * 50)
         apply_to_master(local_db, local_service, merged)
 
-        # ── 8. For each reachable remote: push new clients + apply stats ──────
-        logger.info("-" * 40)
-        logger.info("Writing to remotes...")
+        # ── 8. Apply to remotes ───────────────────────────────────────────────
+        logger.info("─" * 50)
+        write_errors = []
         for srv in servers:
             name = srv["name"]
             if name in errors:
-                logger.warn(f"Skipping {name} (fetch failed)")
+                logger.warn(f"  ⚠ Skipping {name} (fetch failed: {errors[name][:80]})")
                 continue
             try:
                 remote_emails = {r["email"] for r in remote_data.get(name, [])}
-                new_emails = master_emails - remote_emails
+                new_emails    = master_emails - remote_emails
                 if new_emails:
-                    logger.info(f"  {name}: {len(new_emails)} new client(s) to push")
+                    logger.info(
+                        f"  → {name}: pushing {len(new_emails)} new client(s): "
+                        f"{', '.join(sorted(new_emails))}"
+                    )
                     push_new_clients_to_remote(srv, list(new_emails), master_inbounds, merged)
                 apply_to_remote(srv, merged)
             except Exception as e:
-                logger.error(f"Failed writing to {name}: {e}")
+                write_errors.append(name)
+                logger.error(f"  ✗ Failed writing to {name}: {e}")
 
         # ── 9. Save state ─────────────────────────────────────────────────────
         save_state(merged, remote_data)
 
-        logger.success("=" * 60)
-        logger.success(f"Sync complete — {len(merged)} clients, "
-                       f"{len(remote_data)}/{len(servers)} remotes OK")
-        logger.success("=" * 60)
+        # ── Final summary ─────────────────────────────────────────────────────
+        total_errors = len(errors) + len(write_errors)
+        logger.info("═" * 60)
+        if total_errors == 0:
+            logger.success("✅ SYNC COMPLETED WITH NO ERRORS")
+            logger.success(
+                f"   {len(merged)} clients synced to "
+                f"{len(remote_data)}/{len(servers)} remotes"
+            )
+        else:
+            logger.warn(f"⚠️  SYNC COMPLETED WITH {total_errors} ERROR(S)")
+            if errors:
+                logger.error(f"   Fetch errors:  {', '.join(errors.keys())}")
+            if write_errors:
+                logger.error(f"   Write errors:  {', '.join(write_errors)}")
+        logger.info("═" * 60)
 
     except Exception as e:
         logger.error(f"Sync failed: {e}")
@@ -890,8 +997,141 @@ def sync_all():
         logger.error(traceback.format_exc())
         sys.exit(1)
 
+
+def quick_sync():
+    """
+    Quick structural sync triggered by inotify DB change.
+    Detects: new clients, traffic resets (zeroed), enable/disable toggles,
+             quota/expiry changes.
+    Pushes those changes immediately to all remotes.
+    Does NOT calculate traffic deltas. Does NOT update state.json.
+    """
+    logger.info("⚡ Quick Sync — checking for structural changes...")
+
+    try:
+        config  = load_json(CONF_FILE)
+        servers = load_json(SERVERS_FILE).get("servers", [])
+        state   = load_json(STATE_FILE)
+
+        local_db = config.get("local_db_path", "")
+        if not local_db or not os.path.exists(local_db):
+            logger.error("Master DB not found: " + local_db)
+            return
+        if not servers:
+            return
+
+        master_stats, master_inbounds = fetch_master(local_db)
+        master_snap = state.get("servers", {}).get("master", {})
+        master_map  = {r["email"]: r for r in master_stats}
+
+        new_emails:    set             = set(master_map.keys()) - set(master_snap.keys())
+        resets:        set             = set()
+        enable_changes: Dict[str, int]  = {}
+        quota_changes:  Dict[str, dict] = {}
+
+        for email, row in master_map.items():
+            if email not in master_snap:
+                continue
+            prev = master_snap[email]
+            # Reset: traffic dropped to zero (>1 MB prev threshold avoids noise)
+            if row["up"] == 0 and row["down"] == 0:
+                if prev.get("up", 0) > 1_048_576 or prev.get("down", 0) > 1_048_576:
+                    resets.add(email)
+            # Enable / disable toggled
+            pe = prev.get("enable", None)
+            if pe is not None and int(row["enable"]) != int(pe):
+                enable_changes[email] = row["enable"]
+            # Quota or expiry changed
+            pt = prev.get("total",       None)
+            px = prev.get("expiry_time", None)
+            if (pt is not None and row["total"]       != pt) or \
+               (px is not None and row["expiry_time"] != px):
+                quota_changes[email] = row
+
+        if not (new_emails or resets or enable_changes or quota_changes):
+            logger.info("⚡ No structural changes — skipping push")
+            return
+
+        # Log detected changes
+        logger.info("─" * 50)
+        for email in sorted(new_emails):
+            r = master_map[email]
+            logger.new_client(
+                f"  [NEW]    {email:<28} quota:{fmt_bytes(r['total'])}  "
+                f"{'ENABLED ✓' if r['enable'] else 'DISABLED ✗'}"
+            )
+        for email in sorted(resets):
+            logger.reset_ev(
+                f"  [RESET]  {email:<28} traffic zeroed → pushing to remotes"
+            )
+        for email, val in sorted(enable_changes.items()):
+            logger.change(
+                f"  [TOGGLE] {email:<28} → {'ENABLED ✓' if val else 'DISABLED ✗'}"
+            )
+        for email in sorted(quota_changes.keys()):
+            r = quota_changes[email]
+            logger.change(
+                f"  [QUOTA]  {email:<28} total:{fmt_bytes(r['total'])}"
+            )
+
+        # Build partial merged (only changed clients)
+        def make_row(e: str) -> dict:
+            r = master_map[e]
+            return {
+                "email": e, "up": r["up"], "down": r["down"],
+                "expiry_time": r["expiry_time"], "total": r["total"],
+                "enable": r["enable"], "inbound_id": r["inbound_id"],
+            }
+
+        changed = new_emails | resets | set(enable_changes) | set(quota_changes)
+        partial = {e: make_row(e) for e in changed if e in master_map}
+
+        # Push to all remotes in parallel
+        logger.info("─" * 50)
+        q_errors = []
+        q_lock   = threading.Lock()
+
+        def push_one(srv):
+            try:
+                if new_emails:
+                    push_new_clients_to_remote(
+                        srv, list(new_emails), master_inbounds, partial
+                    )
+                existing = (resets | set(enable_changes) | set(quota_changes)) - new_emails
+                if existing:
+                    apply_to_remote(srv, {e: partial[e] for e in existing if e in partial})
+                logger.success(f"  ✓ {srv['name']}: quick sync applied")
+            except Exception as e:
+                with q_lock:
+                    q_errors.append(srv["name"])
+                logger.error(f"  ✗ {srv['name']}: {e}")
+
+        threads = [
+            threading.Thread(target=push_one, args=(s,), daemon=True) for s in servers
+        ]
+        for t in threads: t.start()
+        for t in threads: t.join()
+
+        logger.info("─" * 50)
+        if not q_errors:
+            logger.success("⚡ QUICK SYNC COMPLETED WITH NO ERRORS")
+        else:
+            logger.warn(
+                f"⚡ Quick sync: {len(q_errors)} error(s) — {', '.join(q_errors)}"
+            )
+
+    except Exception as e:
+        logger.error(f"Quick sync failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+
 if __name__ == "__main__":
-    sync_all()
+    mode = sys.argv[1] if len(sys.argv) > 1 else "--full"
+    if mode == "--quick":
+        quick_sync()
+    else:
+        sync_all()
 PYSCRIPT
 
   chmod +x "$SYNC_SCRIPT"
@@ -967,17 +1207,64 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+  cat >"/etc/systemd/system/${SERVICE_NAME}-watcher.service" <<EOF
+[Unit]
+Description=XUI Multi-Server Sync Watcher (inotify)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$APP_DIR/watcher.sh
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat >"$APP_DIR/watcher.sh" <<'WATCHSCRIPT'
+#!/usr/bin/env bash
+# inotify watcher: triggers quick-sync on master DB structural changes
+CONF="/etc/xui-multi-sync/config.json"
+SYNC_SCRIPT="/opt/xui-multi-sync/sync.py"
+DEBOUNCE=3
+
+DB_PATH=$(python3 -c "import json; print(json.load(open('$CONF'))['local_db_path'])" 2>/dev/null || true)
+if [[ -z "$DB_PATH" ]] || [[ ! -f "$DB_PATH" ]]; then
+  echo "Watcher: DB not found at: '$DB_PATH'" >&2
+  exit 1
+fi
+
+echo "Watcher: monitoring $DB_PATH"
+while true; do
+  inotifywait -q -e close_write,modify "$DB_PATH" 2>/dev/null || { sleep 5; continue; }
+  sleep "$DEBOUNCE"
+  while inotifywait -q -t 1 -e close_write,modify "$DB_PATH" 2>/dev/null; do
+    sleep 1
+  done
+  /usr/bin/python3 "$SYNC_SCRIPT" --quick 2>&1 | systemd-cat -t xui-multi-sync-watcher || true
+done
+WATCHSCRIPT
+
+  chmod +x "$APP_DIR/watcher.sh"
   systemctl daemon-reload
   ok "$(msg systemd_created)"
 }
 
 enable_timer() {
   systemctl enable --now "${SERVICE_NAME}.timer" >/dev/null 2>&1
+  if command -v inotifywait >/dev/null 2>&1; then
+    systemctl enable --now "${SERVICE_NAME}-watcher.service" >/dev/null 2>&1 || true
+  fi
   ok "$(msg timer_enabled)"
 }
 
 disable_timer() {
   systemctl disable --now "${SERVICE_NAME}.timer" >/dev/null 2>&1
+  systemctl disable --now "${SERVICE_NAME}-watcher.service" >/dev/null 2>&1 || true
   ok "$(msg timer_disabled)"
 }
 
@@ -1469,7 +1756,17 @@ show_status() {
   else
     warn "$(msg timer_inactive)"
   fi
-  
+
+  echo ""
+  if systemctl is-active "${SERVICE_NAME}-watcher.service" >/dev/null 2>&1; then
+    ok "Watcher (inotify): Active ✓"
+  else
+    warn "Watcher (inotify): Inactive ✗"
+    if ! command -v inotifywait >/dev/null 2>&1; then
+      warn "  inotify-tools not installed — run: apt-get install inotify-tools"
+    fi
+  fi
+
   echo ""
   echo "$(msg recent_logs):"
   journalctl -u "${SERVICE_NAME}.service" -n 5 --no-pager 2>/dev/null || echo "  (No logs)"
@@ -1532,15 +1829,16 @@ run_uninstaller() {
   else
     info "Stopping and disabling services..."
   fi
-  systemctl disable --now "${SERVICE_NAME}.timer"   2>/dev/null || true
-  systemctl stop        "${SERVICE_NAME}.service" 2>/dev/null || true
+  systemctl disable --now "${SERVICE_NAME}.timer"            2>/dev/null || true
+  systemctl disable --now "${SERVICE_NAME}-watcher.service"  2>/dev/null || true
+  systemctl stop        "${SERVICE_NAME}.service"            2>/dev/null || true
 
   if [[ "$LANG_CURRENT" == "fa" ]]; then
     info "حذف فایل‌های systemd..."
   else
     info "Removing systemd units..."
   fi
-  rm -f "$SERVICE_FILE" "$TIMER_FILE"
+  rm -f "$SERVICE_FILE" "$TIMER_FILE" "/etc/systemd/system/${SERVICE_NAME}-watcher.service"
   systemctl daemon-reload
 
   if [[ "$LANG_CURRENT" == "fa" ]]; then
