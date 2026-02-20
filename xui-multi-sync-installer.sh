@@ -1678,11 +1678,7 @@ install_mode() {
   enable_timer
 
   # Install script to permanent location and create global commands
-  local script_dst="$APP_DIR/xuisync.sh"
-  cp -f "$(readlink -f "$0")" "$script_dst"
-  chmod +x "$script_dst"
-  ln -sf "$script_dst" "$BIN"
-  ln -sf "$script_dst" "$BINCMD"
+  _install_commands
 
   echo ""
   ok "$(msg install_complete)"
@@ -1718,19 +1714,35 @@ install_mode() {
   fi
 }
 
+# ── Ensure permanent script copy and symlinks ─────────────────────────────
+_install_commands() {
+  local _dst="$APP_DIR/xuisync.sh"
+  local _self
+  _self="$(readlink -f "$0" 2>/dev/null || true)"
+
+  # If $0 is a real script file (not bash/sh itself), copy it
+  if [[ -f "$_self" ]] && [[ "$_self" != */bash ]] && [[ "$_self" != */sh ]] && [[ "$_self" != */dash ]]; then
+    cp -f "$_self" "$_dst" && chmod +x "$_dst"
+  # If permanent copy already exists, just reuse it
+  elif [[ -f "$_dst" ]]; then
+    chmod +x "$_dst"
+  # Last resort: re-download from GitHub
+  else
+    curl -fsSL "https://raw.githubusercontent.com/sepehringo/xui-panel-manager/main/xui-multi-sync-installer.sh" \
+      -o "$_dst" && chmod +x "$_dst"
+  fi
+
+  ln -sf "$_dst" "$BIN"    2>/dev/null || true
+  ln -sf "$_dst" "$BINCMD" 2>/dev/null || true
+}
+
 # Main entry point
 if [[ ! -f "$CONF" ]] || [[ ! -f "$SERVERS_CONF" ]]; then
   install_mode
 else
   need_root
   load_language
-  # Self-repair: recreate global command symlinks if missing or broken
-  if [[ ! -e "$BINCMD" ]] || [[ ! -e "$BIN" ]]; then
-    _dst="$APP_DIR/xuisync.sh"
-    cp -f "$(readlink -f "$0")" "$_dst" 2>/dev/null || true
-    chmod +x "$_dst" 2>/dev/null || true
-    ln -sf "$_dst" "$BIN"    2>/dev/null || true
-    ln -sf "$_dst" "$BINCMD" 2>/dev/null || true
-  fi
+  # Self-repair: always ensure symlinks exist and point to a valid copy
+  _install_commands
   main_menu
 fi
