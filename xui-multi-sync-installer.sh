@@ -1939,23 +1939,15 @@ run_update() {
     return 1
   fi
 
-  # Replace the script in permanent location
+  # Put new script in place first
   cp -f "$tmp" "$script_dst"
   chmod +x "$script_dst"
   rm -f "$tmp"
-
-  # Recreate global command symlinks
   ln -sf "$script_dst" "$BIN"
   ln -sf "$script_dst" "$BINCMD"
 
-  # Re-extract sync.py from the newly downloaded script (NOT from current in-memory process)
-  bash "$script_dst" --write-sync
-
-  # Re-deploy systemd units (watcher.sh + service files) from new script
-  bash "$script_dst" --write-units
-
-  # Restart watcher if it was running
-  systemctl restart "${SERVICE_NAME}-watcher.service" 2>/dev/null || true
+  # Full reinstall from the new script — preserves all user data
+  bash "$script_dst" --reinstall
 
   echo ""
   if [[ "$LANG_CURRENT" == "fa" ]]; then
@@ -2147,6 +2139,46 @@ except:
 " 2>/dev/null || echo 3600)
   write_systemd_units "$_interval_sec"
   systemctl enable "${SERVICE_NAME}-watcher.service" 2>/dev/null || true
+  exit 0
+fi
+
+if [[ "${1:-}" == "--reinstall" ]]; then
+  # Full reinstall preserving all user data:
+  #   /etc/xui-multi-sync/config.json      ← kept
+  #   /etc/xui-multi-sync/servers.json     ← kept
+  #   /etc/xui-multi-sync/id_ed25519(.pub) ← kept
+  #   /etc/xui-multi-sync/language         ← kept
+  #   /var/lib/xui-multi-sync/state.json   ← kept
+  need_root
+  load_language
+
+  info "Stopping services..."
+  systemctl disable --now "${SERVICE_NAME}.timer"           2>/dev/null || true
+  systemctl disable --now "${SERVICE_NAME}-watcher.service" 2>/dev/null || true
+  systemctl stop        "${SERVICE_NAME}.service"           2>/dev/null || true
+
+  info "Installing/updating dependencies..."
+  install_deps
+
+  info "Deploying sync engine..."
+  write_sync_script
+
+  info "Deploying systemd units..."
+  _interval_sec=$(python3 -c "
+import json
+try:
+  c = json.load(open('$CONF'))
+  print(int(c.get('sync_interval_minutes', 60)) * 60)
+except:
+  print(3600)
+" 2>/dev/null || echo 3600)
+  write_systemd_units "$_interval_sec"
+
+  info "Enabling services..."
+  enable_timer
+
+  _install_commands
+  ok "Reinstall complete."
   exit 0
 fi
 
