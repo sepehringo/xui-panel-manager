@@ -309,10 +309,24 @@ def fetch_master(db_path: str) -> Tuple[List[dict], List[dict]]:
         for k in ("up","down","expiry_time","total","enable","inbound_id"):
             row[k] = int(row[k] or 0)
 
-    cur.execute("SELECT id, tag, protocol, settings FROM inbounds")
-    inbounds = [{"id": r["id"], "tag": r["tag"],
-                 "protocol": r["protocol"], "settings": r["settings"]}
-                for r in cur.fetchall()]
+    cur.execute("SELECT id, user_id, up, down, total, remark, enable, expiry_time, listen, port, protocol, settings, stream_settings, tag, sniffing FROM inbounds")
+    inbounds = [{
+        "id":              r["id"],
+        "user_id":         r["user_id"],
+        "up":              int(r["up"] or 0),
+        "down":            int(r["down"] or 0),
+        "total":           int(r["total"] or 0),
+        "remark":          r["remark"],
+        "enable":          int(r["enable"] or 1),
+        "expiry_time":     int(r["expiry_time"] or 0),
+        "listen":          r["listen"] or "",
+        "port":            int(r["port"] or 0),
+        "protocol":        r["protocol"],
+        "settings":        r["settings"],
+        "stream_settings": r["stream_settings"],
+        "tag":             r["tag"],
+        "sniffing":        r["sniffing"],
+    } for r in cur.fetchall()]
     con.close()
 
     logger.success(f"Master: {len(stats)} clients, {len(inbounds)} inbounds")
@@ -488,14 +502,15 @@ def push_new_clients_to_remote(server: dict, new_clients: List[dict],
             logger.warn(f"  New client {email}: not found in inbound settings, skip")
             continue
         payload.append({
-            "tag":        master_ib["tag"],
-            "client":     client_obj,
-            "email":      email,
-            "up":         m["up"],
-            "down":       m["down"],
-            "expiry_time":m["expiry_time"],
-            "total":      m["total"],
-            "enable":     m["enable"],
+            "tag":          master_ib["tag"],
+            "client":       client_obj,
+            "email":        email,
+            "up":           m["up"],
+            "down":         m["down"],
+            "expiry_time":  m["expiry_time"],
+            "total":        m["total"],
+            "enable":       m["enable"],
+            "inbound_full": master_ib,
         })
 
     if not payload:
@@ -539,18 +554,58 @@ for item in payload:
         cur.execute('SELECT id, settings FROM inbounds WHERE tag=?', (tag,))
         row = cur.fetchone()
         if not row:
+            # Inbound doesn't exist on remote yet — insert the full inbound row
+            ib_data = item.get('inbound_full')
+            if not ib_data:
+                con.close()
+                results.append({{'email': email, 'status': 'no_inbound', 'tag': tag}})
+                continue
+            cur.execute('''
+                INSERT INTO inbounds
+                (user_id, up, down, total, remark, enable, expiry_time, listen,
+                 port, protocol, settings, stream_settings, tag, sniffing)
+                VALUES (?,0,0,0,?,?,0,?,?,?,?,?,?,?)
+            ''', (
+                ib_data.get('user_id', 0),
+                ib_data.get('remark', ''),
+                int(ib_data.get('enable', 1)),
+                ib_data.get('listen', ''),
+                int(ib_data.get('port', 0)),
+                ib_data.get('protocol', ''),
+                ib_data.get('settings', '{}'),
+                ib_data.get('stream_settings', '{}'),
+                ib_data.get('tag', ''),
+                ib_data.get('sniffing', '{}'),
+            ))
+            ib_id = cur.lastrowid
+            # settings was already inserted with all clients from master
+            # so we just need the traffic row
+            cur.execute('''
+                INSERT OR IGNORE INTO client_traffics
+                (inbound_id, enable, email, up, down, expiry_time, total)
+                VALUES (?,?,?,?,?,?,?)
+            ''', (ib_id, stats['enable'], email,
+                  stats['up'], stats['down'], stats['expiry_time'], stats['total']))
+            con.commit()
             con.close()
-            results.append({{'email': email, 'status': 'no_inbound', 'tag': tag}})
+            results.append({{'email': email, 'status': 'inbound_created'}})
             continue
 
         ib_id, settings_raw = row
         settings = json.loads(settings_raw or '{{}}')
         clients_list = settings.get('clients', [])
 
-        # Skip if already exists
+        # Skip if already exists in settings, but still ensure traffic row exists
         if any(c.get('email') == email for c in clients_list):
+            cur.execute('''
+                INSERT OR IGNORE INTO client_traffics
+                (inbound_id, enable, email, up, down, expiry_time, total)
+                VALUES (?,?,?,?,?,?,?)
+            ''', (ib_id, stats['enable'], email,
+                  stats['up'], stats['down'], stats['expiry_time'], stats['total']))
+            con.commit()
             con.close()
-            results.append({{'email': email, 'status': 'already_exists'}})
+            results.append({{'email': email, 'status': 'traffic_added'}})
             continue
 
         # Append client
