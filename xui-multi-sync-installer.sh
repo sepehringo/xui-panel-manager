@@ -328,6 +328,27 @@ def run_ssh(server, command, timeout=45):
         raise RuntimeError(f"SSH failed to {server['host']}: {r.stderr.strip()}")
     return r.stdout
 
+
+def run_ssh_script(server: dict, python_script: str, timeout: int = 60) -> str:
+    """Pipe a Python script to 'python3 -' on the remote via stdin.
+    Avoids ARG_MAX limit; safe for any payload size."""
+    cmd = [
+        "ssh",
+        "-i", server.get("ssh_key", "/etc/xui-multi-sync/id_ed25519"),
+        "-p", str(server.get("port", 22)),
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=10",
+        f"{server.get('user','root')}@{server['host']}",
+        "python3 -",
+    ]
+    r = subprocess.run(cmd, input=python_script,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=timeout, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"SSH failed to {server['host']}: {r.stderr.strip()}")
+    return r.stdout
+
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 
 def fetch_master(db_path: str) -> Tuple[List[dict], List[dict]]:
@@ -556,15 +577,15 @@ def push_new_clients_to_remote(server: dict, new_clients: List[dict],
     if not payload:
         return
 
-    payload_json = json.dumps(payload).replace("'", "'\\''")
+    import base64 as _b64
+    payload_b64 = _b64.b64encode(json.dumps(payload).encode()).decode()
     logger.info(f"  Pushing {len(payload)} new client(s) to {server['name']}...")
 
-    push_script = f"""python3 - <<'PYEOF'
-import sqlite3, json, sys, time, os
+    push_script = f"""import sqlite3, json, sys, time, os, base64
 
 db_path = '{db_path}'
 service = '{service_name}'
-payload = json.loads('{payload_json}')
+payload = json.loads(base64.b64decode('{payload_b64}').decode())
 
 def db_connect(path, tries=8):
     for _ in range(tries):
@@ -671,10 +692,9 @@ for item in payload:
         results.append({{'email': email, 'status': 'error', 'msg': str(e)}})
 
 print(json.dumps(results))
-PYEOF
 """
 
-    out = run_ssh(server, push_script, timeout=60)
+    out = run_ssh_script(server, push_script, timeout=60)
     try:
         results = json.loads(out)
         for r in results:
