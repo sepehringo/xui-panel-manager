@@ -400,10 +400,11 @@ def fetch_remote_stats(server: dict) -> List[dict]:
     db_path = server.get("db_path", "/etc/x-ui/x-ui.db")
     logger.info(f"Fetching stats from {server['name']} ({server['host']})...")
 
-    reader = f"""python3 - <<'PYEOF'
-import sqlite3, json, sys
+    reader = f"""import sqlite3, json, sys
 try:
-    con = sqlite3.connect('{db_path}', timeout=10)
+    con = sqlite3.connect('{db_path}', timeout=30)
+    con.execute('PRAGMA journal_mode=WAL')
+    con.execute('PRAGMA busy_timeout=30000')
     cur = con.cursor()
     cur.execute('SELECT email, up, down, inbound_id FROM client_traffics')
     rows = [{{"email":r[0],"up":int(r[1] or 0),"down":int(r[2] or 0),"inbound_id":int(r[3] or 0)}} for r in cur.fetchall()]
@@ -412,9 +413,8 @@ try:
 except Exception as e:
     print(json.dumps({{"error":str(e)}}), file=sys.stderr)
     sys.exit(1)
-PYEOF
 """
-    out = run_ssh(server, reader)
+    out = run_ssh_script(server, reader)
     data = json.loads(out)
     logger.success(f"{server['name']}: {len(data)} clients")
     return data
@@ -726,56 +726,44 @@ def _write_db(con, merged: Dict[str, dict]):
 
 def apply_to_master(db_path: str, service_name: str, merged: Dict[str, dict]):
     logger.info("Applying merged stats to master...")
-    for attempt in range(8):
+    for attempt in range(12):
         try:
-            con = sqlite3.connect(db_path, timeout=10)
+            con = sqlite3.connect(db_path, timeout=30)
             con.execute("PRAGMA journal_mode=WAL")
-            con.execute("PRAGMA busy_timeout=10000")
+            con.execute("PRAGMA busy_timeout=30000")
             _write_db(con, merged)
             con.close()
             logger.success("✓ Master updated")
             return
         except Exception as e:
             if "locked" in str(e).lower() or "busy" in str(e).lower():
-                time.sleep(1)
+                time.sleep(2)
                 continue
             raise
-
-    logger.warn("DB locked — stopping service temporarily...")
-    os.system(f"systemctl stop {service_name} 2>/dev/null")
-    time.sleep(1)
-    try:
-        con = sqlite3.connect(db_path, timeout=10)
-        _write_db(con, merged)
-        con.close()
-        logger.success("✓ Master updated (after service stop)")
-    finally:
-        os.system(f"systemctl start {service_name} 2>/dev/null")
+    raise RuntimeError("Master DB still locked after retries — did not write")
 
 
 def apply_to_remote(server: dict, merged: Dict[str, dict]):
-    """Send merged stats to remote via a single SSH call."""
+    """Send merged stats to remote via a single SSH call (stdin pipe)."""
     logger.info(f"Applying merged stats to {server['name']}...")
 
     db_path      = server.get("db_path", "/etc/x-ui/x-ui.db")
     service_name = server.get("service_name", "x-ui")
 
-    # Only send emails that actually exist on the remote (avoid ghost rows)
-    payload_json = json.dumps(list(merged.values())).replace("'", "'\\''")
+    import base64 as _b64
+    rows_b64 = _b64.b64encode(json.dumps(list(merged.values())).encode()).decode()
 
-    update_script = f"""python3 - <<'PYEOF'
-import sqlite3, json, sys, time, os
+    update_script = f"""import sqlite3, json, sys, time, base64
 
-db_path  = '{db_path}'
-service  = '{service_name}'
-rows     = json.loads('{payload_json}')
+db_path = '{db_path}'
+rows    = json.loads(base64.b64decode('{rows_b64}').decode())
 
-def try_write(db_path, rows, tries=8):
-    for _ in range(tries):
+def try_write(db_path, rows, tries=12):
+    for i in range(tries):
         try:
-            con = sqlite3.connect(db_path, timeout=10)
+            con = sqlite3.connect(db_path, timeout=30)
             con.execute('PRAGMA journal_mode=WAL')
-            con.execute('PRAGMA busy_timeout=10000')
+            con.execute('PRAGMA busy_timeout=30000')
             cur = con.cursor()
             cur.execute('BEGIN')
             for d in rows:
@@ -788,25 +776,18 @@ def try_write(db_path, rows, tries=8):
             return True
         except Exception as e:
             if 'locked' in str(e).lower() or 'busy' in str(e).lower():
-                time.sleep(1)
+                time.sleep(2)
                 continue
             print(f'ERROR: {{e}}', file=sys.stderr)
             sys.exit(1)
-    return False
+    print('ERROR: DB still locked after retries', file=sys.stderr)
+    sys.exit(1)
 
-if not try_write(db_path, rows):
-    os.system(f'systemctl stop {{service}} 2>/dev/null')
-    time.sleep(1)
-    try:
-        try_write(db_path, rows)
-    finally:
-        os.system(f'systemctl start {{service}} 2>/dev/null')
-
+try_write(db_path, rows)
 print('SUCCESS')
-PYEOF
 """
 
-    out = run_ssh(server, update_script, timeout=60)
+    out = run_ssh_script(server, update_script, timeout=90)
     if "SUCCESS" in out:
         logger.success(f"✓ {server['name']} stats updated")
     else:
