@@ -1246,18 +1246,36 @@ WATCH_FILES=("$DB_PATH")
 [[ -f "${DB_PATH}-wal" ]] && WATCH_FILES+=("${DB_PATH}-wal")
 
 echo "Watcher: monitoring ${WATCH_FILES[*]}"
+
+LOCK_FILE="/var/run/xui-multi-sync-quick.lock"
+
 while true; do
   # Re-check WAL file existence each loop (created on first write)
   WATCH_FILES=("$DB_PATH")
   [[ -f "${DB_PATH}-wal" ]] && WATCH_FILES+=("${DB_PATH}-wal")
 
   inotifywait -q -e close_write,modify "${WATCH_FILES[@]}" 2>/dev/null || { sleep 5; continue; }
+
+  # If a sync is already running, skip this trigger entirely
+  if [[ -f "$LOCK_FILE" ]]; then
+    continue
+  fi
+
   sleep "$DEBOUNCE"
-  # Drain rapid bursts
+  # Drain rapid bursts (still skip if lock appeared during drain)
   while inotifywait -q -t 1 -e close_write,modify "${WATCH_FILES[@]}" 2>/dev/null; do
     sleep 1
   done
+
+  [[ -f "$LOCK_FILE" ]] && continue
+
+  # Acquire lock, run sync, release lock, then cooldown before watching again
+  touch "$LOCK_FILE"
   /usr/bin/python3 "$SYNC_SCRIPT" --quick 2>&1 | systemd-cat -t xui-multi-sync-watcher || true
+  rm -f "$LOCK_FILE"
+
+  # Cooldown: ignore any DB changes made by the sync itself
+  sleep 10
 done
 WATCHSCRIPT
 
