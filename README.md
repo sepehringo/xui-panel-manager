@@ -2,343 +2,211 @@
 
 همگام‌سازی هوشمند چندین پنل X-UI / 3X-UI با الگوریتم Delta-Based
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Ubuntu%20%7C%20Debian-orange.svg)]()
-[![Python](https://img.shields.io/badge/Python-3.8%2B-green.svg)]()
+> **[English](#english) | [فارسی](#فارسی)**
 
 ---
 
-## ویژگی‌ها
+<a name="english"></a>
+## English
 
-| ویژگی | توضیح |
-|-------|-------|
-| **Master-Only Authority** | سرور اصلی منبع حقیقت است — expiry، total و enable فقط از Master می‌آیند |
-| **Delta-Based Traffic** | مصرف واقعی همه سرورها جمع می‌شود، نه صرفاً بیشترین مقدار |
-| **Full Client Sync** | اکانت‌های جدید با UUID، پسورد و تنظیمات کامل Inbound به همه سرورها منتقل می‌شوند |
-| **Reset Detection** | اگر admin ترافیک را روی Master صفر کند، روی تمام سرورها هم اعمال می‌شود |
-| **Parallel Fetch** | دریافت همزمان اطلاعات از همه سرورها (threading) |
-| **Auto-Detect** | سرویس و مسیر دیتابیس سرور جدید به صورت خودکار شناسایی می‌شود |
-| **Auto Timer** | با systemd timer به صورت دوره‌ای اجرا می‌شود |
-| **دو زبانه** | فارسی و انگلیسی |
+Smart multi-panel sync for X-UI / 3X-UI using a Delta-Based algorithm.
 
----
+### Quick Install
 
-## نصب سریع
-
-فقط روی **سرور Master** نصب کنید:
+Run only on your **Master server**:
 
 ```bash
-wget -O xuisync.sh https://raw.githubusercontent.com/sepehringo/xui-panel-manager/main/xui-multi-sync-installer.sh
-chmod +x xuisync.sh
-sudo ./xuisync.sh
+wget -O xuisync.sh https://raw.githubusercontent.com/sepehringo/xui-panel-manager/main/xui-multi-sync-installer.sh && chmod +x xuisync.sh && sudo ./xuisync.sh
 ```
 
-پس از نصب، از هر جایی با دستور `sudo xuisync` اجرا کنید.
+After install, manage from anywhere with `sudo xuisync`.
 
----
+### Features
 
-## معماری سیستم
+| | |
+|---|---|
+| **Master Authority** | expiry, total and enable are enforced from Master only |
+| **Delta Traffic** | Real usage is aggregated across all servers |
+| **Full Client Sync** | New users with full UUID are pushed to all servers |
+| **Reset Detection** | Traffic reset on Master propagates to all servers |
+| **Auto-Detect** | Remote DB path and service are detected automatically |
+| **Systemd Timer** | Periodic auto-sync with configurable interval |
 
-```
-┌─────────────────────────────────────────────────┐
-│                  Master Server                  │
-│          (این سرور اسکریپت نصب است)             │
-│                                                 │
-│  sync.py ──┬── SSH ──▶ Server-1 (read + write)  │
-│            ├── SSH ──▶ Server-2 (read + write)  │
-│            └── SSH ──▶ Server-N (read + write)  │
-└─────────────────────────────────────────────────┘
-```
+### Setup
 
-- نصب فقط روی **یک سرور** (Master)
-- Master از طریق SSH به بقیه سرورها وصل می‌شود
-- هیچ چیزی روی سرورهای دیگر نصب نمی‌شود
+**1. Install** — Run the command above on Master. Language, sync interval (default 60 min) and SSH key are configured automatically.
 
----
-
-## منطق همگام‌سازی
-
-### قوانین sync
-
-| فیلد | منبع | دلیل |
-|------|------|------|
-| `up` / `down` | Master فعلی + جمع delta‌های Remote | مصرف واقعی همه سرورها |
-| `expiry_time` | فقط Master | ادمین روی Master تمدید می‌کند |
-| `total` | فقط Master | حجم کوتا روی Master تنظیم می‌شود |
-| `enable` | فقط Master | غیرفعال کردن فقط از Master اعمال می‌شود |
-
-### مثال عملی
-
-فرض کنید Master + 2 سرور دیگر دارید:
-
-**Snapshot قبلی (آخرین sync):**
-```
-Master:   user@vpn.com → up: 5 GB, down: 10 GB
-Server-1: user@vpn.com → up: 5 GB, down: 10 GB
-Server-2: user@vpn.com → up: 5 GB, down: 10 GB
-```
-
-**مصرف جدید تا این لحظه:**
-```
-Master:   up: 7 GB  (+2)   down: 13 GB (+3)
-Server-1: up: 8 GB  (+3)   down: 12 GB (+2)
-Server-2: up: 6 GB  (+1)   down: 17 GB (+7)
-```
-
-**محاسبه:**
-```
-delta_up   = remote_1(+3) + remote_2(+1)  = +4 GB
-delta_down = remote_1(+2) + remote_2(+7)  = +9 GB
-
-نتیجه نهایی:
-  up   = 7 + 4 = 11 GB
-  down = 13 + 9 = 22 GB
-```
-
-> ⚠️ دلتای Master **دیگر اضافه نمی‌شود** چون مقدار `up=7` و `down=13` قبلاً مصرف Master را در خود دارد.
-
----
-
-### تشخیص Reset
-
-اگر admin روی Master ترافیک کاربری را صفر کند:
-
-```
-Snapshot: up=10 GB, down=20 GB
-Master فعلی: up=0, down=0  ← کاهش → Reset تشخیص داده شد
-```
-
-**نتیجه:** همه سرورها به مقادیر فعلی Master ست می‌شوند (صفر).  
-این مکانیزم با اشتباه فرق دارد — فقط وقتی **Master** کاهش داشته باشد اعمال می‌شود.
-
----
-
-### اضافه شدن اکانت جدید
-
-وقتی کاربر جدیدی روی Master اضافه می‌شود:
-
-1. UUID و تنظیمات کامل از جدول `inbounds` خوانده می‌شود
-2. inbound متناظر روی هر Remote با `tag` پیدا می‌شود
-3. کاربر به `settings.clients` اضافه می‌شود
-4. ردیف `client_traffics` با `inbound_id` درست insert می‌شود
-
-کاربر روی تمام سرورها **واقعاً** کار می‌کند، نه فقط یک ردیف آماری.
-
----
-
-## راه‌اندازی
-
-### ۱. نصب
+**2. Copy SSH Key** — After install, the public key is displayed. On each Remote server:
 
 ```bash
-sudo ./xuisync.sh
-```
-
-مراحل نصب:
-- انتخاب زبان (فارسی / English)
-- نصب وابستگی‌ها (`python3`, `sqlite3`, `jq`, `openssh-client`)
-- ساخت SSH key اختصاصی
-- تنظیم بازه زمانی sync (پیش‌فرض: 60 دقیقه)
-- فعال‌سازی systemd timer
-
-### ۲. کپی کلید SSH
-
-پس از نصب، کلید عمومی SSH نمایش داده می‌شود. این کلید را روی هر سرور Remote اجرا کنید:
-
-```bash
-# روی هر سرور Remote:
 echo "ssh-ed25519 AAAA..." >> ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
 ```
 
-### ۳. اضافه کردن سرور
+**3. Add Server** — `sudo xuisync` → option 3. Only IP and SSH port are required.
+
+### Management Menu
+
+```
+sudo xuisync
+
+  1) System status      5) Change sync interval
+  2) List servers       6) Enable/disable timer
+  3) Add server         7) Manual sync
+  4) Remove server      8) View logs
+  U) Uninstall          0) Exit
+```
+
+### Sync Logic
+
+```
+final_up = master_up + Σ(delta_up of each remote)
+```
+
+- **expiry / total / enable** — Master only
+- **up / down** — Real sum across all servers
+- **Reset** — If Master traffic decreases, all servers are reset
+- **Offline server** — Logged, sync continues with remaining servers
+
+### Quick Troubleshooting
 
 ```bash
-sudo xuisync
-# گزینه 3 → Add Server
+tail -f /var/log/xui-multi-sync.log
+ssh -i /etc/xui-multi-sync/id_ed25519 root@SERVER_IP
+systemctl status xui-multi-sync.timer
 ```
 
-فقط نام، IP و پورت SSH می‌خواهد. **سرویس و مسیر دیتابیس به صورت خودکار شناسایی می‌شوند.**
+DB locked: Script retries up to 8 times and restarts the service if needed.
 
-اگر SSH key کپی نشده باشد، یک تست اتصال انجام می‌دهد و در صورت خطا دلیل دقیق را نشان می‌دهد.
+### Requirements
 
----
+- Ubuntu 20.04+ / Debian 10+
+- root access on Master
+- X-UI or 3X-UI installed on all servers
+- SSH access from Master to all Remotes
 
-## منوی مدیریت
+### License
 
-```bash
-sudo xuisync
-```
+MIT
 
-```
-╔═══════════════════════════════════════╗
-║   XUI Multi-Server Sync Manager      ║
-╚═══════════════════════════════════════╝
+### Support
 
-1) وضعیت سیستم
-2) لیست سرورها
-3) اضافه کردن سرور
-4) حذف سرور
-5) تغییر بازه زمانی
-6) فعال/غیرفعال تایمر خودکار
-7) اجرای دستی sync
-8) نمایش لاگ‌ها
-9) تغییر زبان
-U) حذف سیستم
-0) خروج
-```
-
----
-
-## فایل‌های سیستم
+If this tool was useful, consider supporting via USDT (ERC20 / BEP20):
 
 ```
-/etc/xui-multi-sync/
-├── config.json        ← تنظیمات اصلی
-├── servers.json       ← لیست سرورهای Remote
-├── language           ← زبان انتخابی (en/fa)
-└── id_ed25519         ← کلید SSH اختصاصی
-
-/opt/xui-multi-sync/
-└── sync.py            ← اسکریپت اصلی Python
-
-/var/lib/xui-multi-sync/
-└── state.json         ← Snapshot آخرین sync (خودکار)
-
-/var/log/xui-multi-sync.log   ← لاگ‌ها
-/usr/local/bin/xuisync        ← دستور سراسری
-```
-
-### config.json
-
-```json
-{
-  "local_db_path": "/etc/x-ui/x-ui.db",
-  "local_service_name": "x-ui",
-  "sync_interval_minutes": 60,
-  "is_master": true
-}
-```
-
-### servers.json
-
-```json
-{
-  "servers": [
-    {
-      "name": "Server-DE",
-      "host": "1.2.3.4",
-      "port": 22,
-      "user": "root",
-      "db_path": "/etc/x-ui/x-ui.db",
-      "service_name": "x-ui",
-      "ssh_key": "/etc/xui-multi-sync/id_ed25519"
-    }
-  ]
-}
+0x31835120E726de2EdFE5524EC282271468201D03
 ```
 
 ---
 
-## دستورات مفید
+<a name="فارسی"></a>
+## فارسی
+
+همگام‌سازی هوشمند چندین پنل X-UI / 3X-UI با الگوریتم Delta-Based
+
+### نصب سریع
+
+فقط روی **سرور Master** اجرا کنید:
 
 ```bash
-# مدیریت سیستم
+wget -O xuisync.sh https://raw.githubusercontent.com/sepehringo/xui-panel-manager/main/xui-multi-sync-installer.sh && chmod +x xuisync.sh && sudo ./xuisync.sh
+```
+
+پس از نصب، مدیریت از هر جایی با `sudo xuisync`.
+
+---
+
+### ویژگی‌ها
+
+| | |
+|---|---|
+| **Master Authority** | مقادیر expiry، total و enable فقط از Master اعمال می‌شوند |
+| **Delta Traffic** | مصرف واقعی همه سرورها تجمیع می‌شود |
+| **Full Client Sync** | کاربران جدید با UUID کامل به همه سرورها منتقل می‌شوند |
+| **Reset Detection** | صفرسازی روی Master به همه سرورها اعمال می‌شود |
+| **Auto-Detect** | مسیر دیتابیس و سرویس سرور Remote خودکار شناسایی می‌شود |
+| **Systemd Timer** | اجرای دوره‌ای خودکار با قابلیت تنظیم بازه زمانی |
+
+---
+
+### راه‌اندازی
+
+**۱. نصب** — اسکریپت بالا را روی Master اجرا کنید. زبان، بازه زمانی (پیش‌فرض ۶۰ دقیقه) و SSH key به صورت خودکار تنظیم می‌شوند.
+
+**۲. کپی SSH Key** — پس از نصب، کلید عمومی نمایش داده می‌شود. روی هر سرور Remote:
+
+```bash
+echo "ssh-ed25519 AAAA..." >> ~/.ssh/authorized_keys
+```
+
+**۳. افزودن سرور** — `sudo xuisync` → گزینه ۳. فقط IP و پورت SSH کافی است.
+
+---
+
+### منوی مدیریت
+
+```
 sudo xuisync
 
-# مشاهده لاگ زنده
+  1) وضعیت سیستم       5) تغییر بازه زمانی
+  2) لیست سرورها        6) فعال/غیرفعال تایمر
+  3) اضافه کردن سرور    7) اجرای دستی sync
+  4) حذف سرور           8) نمایش لاگ‌ها
+  U) حذف سیستم          0) خروج
+```
+
+---
+
+### منطق Sync
+
+ترافیک روی Master به صورت زیر محاسبه می‌شود:
+
+```
+final_up = master_up + Σ(delta_up of each remote)
+```
+
+- **expiry / total / enable** — فقط از Master
+- **up / down** — مصرف واقعی جمع همه سرورها
+- **Reset** — اگر مصرف Master کاهش یابد، همه سرورها reset می‌شوند
+- **Offline server** — لاگ می‌شود، sync بقیه ادامه می‌یابد
+
+---
+
+### عیب‌یابی سریع
+
+```bash
+# لاگ زنده
 tail -f /var/log/xui-multi-sync.log
 
-# اجرای دستی sync
-sudo python3 /opt/xui-multi-sync/sync.py
+# تست SSH دستی
+ssh -i /etc/xui-multi-sync/id_ed25519 root@SERVER_IP
 
 # وضعیت تایمر
 systemctl status xui-multi-sync.timer
-
-# تایمر بعدی
-systemctl list-timers | grep xui-multi-sync
-
-# لاگ‌های systemd
-journalctl -u xui-multi-sync.service -n 50 -f
-
-# توقف موقت
-sudo systemctl stop xui-multi-sync.timer
-
-# راه‌اندازی مجدد
-sudo systemctl start xui-multi-sync.timer
 ```
 
+دیتابیس قفل: اسکریپت تا ۸ بار retry می‌کند و در صورت نیاز سرویس را موقتاً restart می‌کند.
+
 ---
 
-## عیب‌یابی
+### پیش‌نیازها
 
-### خطای SSH
+- Ubuntu 20.04+ / Debian 10+
+- دسترسی root روی Master
+- X-UI یا 3X-UI نصب‌شده روی همه سرورها
+- دسترسی SSH از Master به Remote‌ها
 
-```bash
-# تست دستی
-ssh -i /etc/xui-multi-sync/id_ed25519 -p 22 root@SERVER_IP
+---
 
-# مشکل معمول: کلید کپی نشده
-ssh-copy-id -i /etc/xui-multi-sync/id_ed25519.pub root@SERVER_IP
+### لایسنس
+
+MIT
+
+---
+
+### حمایت از پروژه
+
+اگر این ابزار برایتان مفید بود، با ارسال USDT (ERC20 / BEP20) حمایت کنید:
+
 ```
-
-### دیتابیس قفل است
-
-اسکریپت به صورت خودکار:
-1. تا ۸ بار retry می‌کند
-2. در صورت نیاز سرویس را موقتاً متوقف و راه‌اندازی مجدد می‌کند
-
-### state.json پاک شد
-
-در sync بعدی، delta از صفر حساب می‌شود — یعنی مصرف فعلی سرورها به عنوان delta اعمال می‌شود. مشکلی ایجاد نمی‌کند اما sync اول ممکن است مقادیر را کمی بالاتر ببرد.
-
-```bash
-# بک‌آپ از state
-cp /var/lib/xui-multi-sync/state.json ~/state-backup.json
+0x31835120E726de2EdFE5524EC282271468201D03
 ```
-
----
-
-## سؤالات متداول
-
-**آیا روی همه سرورها باید نصب شود؟**  
-خیر. فقط روی یک سرور (Master). بقیه سرورها فقط نیاز به SSH دارند.
-
-**اگر یک سرور offline باشد چه می‌شود؟**  
-خطا لاگ می‌شود و sync با بقیه سرورها ادامه می‌یابد. در sync بعدی که آن سرور online شود، delta جدیدش محاسبه می‌شود.
-
-**آیا می‌توانم manual sync بزنم؟**  
-بله، از منو گزینه ۷ یا مستقیم:  
-```bash
-sudo python3 /opt/xui-multi-sync/sync.py
-```
-
-**اگر ادمین روی یک سرور Remote کاربری را disable کند چه می‌شود؟**  
-در sync بعدی، چون `enable` فقط از Master می‌آید، آن سرور دوباره به وضعیت Master برمی‌گردد.
-
-**آیا بازه زمانی را می‌توانم تغییر دهم؟**  
-بله، از منو گزینه ۵ یا مستقیم در `config.json`.
-
----
-
-## نکات امنیتی
-
-- کلید خصوصی SSH باید permissions `600` داشته باشد
-- Master باید به سرورهای Remote دسترسی SSH داشته باشد (یک‌طرفه)
-- در محیط production از `StrictHostKeyChecking=yes` استفاده کنید
-- از `config.json` و `state.json` بک‌آپ بگیرید
-
----
-
-## پیش‌نیازها
-
-- **سیستم‌عامل**: Ubuntu 20.04+ / Debian 10+
-- **دسترسی**: root
-- **X-UI / 3X-UI**: نصب‌شده روی همه سرورها
-- **شبکه**: دسترسی SSH از Master به تمام Remote‌ها
-
----
-
-## لایسنس
-
-MIT — استفاده، تغییر و توزیع آزاد است.
