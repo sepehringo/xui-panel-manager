@@ -969,6 +969,14 @@ def sync_all():
                     )
                     push_new_clients_to_remote(srv, list(new_emails), master_inbounds, merged)
                 apply_to_remote(srv, merged)
+
+                svc = srv.get("service_name", "x-ui")
+                try:
+                    run_ssh(srv, f"systemctl restart {svc}")
+                    logger.info(f"  ✓ {name} panel ({svc}) restarted")
+                except Exception as rs_e:
+                    logger.warn(f"  ⚠ Failed to restart {svc} on {name}: {rs_e}")
+
             except Exception as e:
                 write_errors.append(name)
                 logger.error(f"  ✗ Failed writing to {name}: {e}")
@@ -1102,6 +1110,14 @@ def quick_sync():
                 existing = (resets | set(enable_changes) | set(quota_changes)) - new_emails
                 if existing:
                     apply_to_remote(srv, {e: partial[e] for e in existing if e in partial})
+
+                svc = srv.get("service_name", "x-ui")
+                try:
+                    run_ssh(srv, f"systemctl restart {svc}")
+                    logger.info(f"  ✓ {srv['name']} panel ({svc}) restarted")
+                except Exception as rs_e:
+                    logger.warn(f"  ⚠ Failed to restart {svc} on {srv['name']}: {rs_e}")
+
                 logger.success(f"  ✓ {srv['name']}: quick sync applied")
             except Exception as e:
                 with q_lock:
